@@ -4,7 +4,7 @@
 
 ## 私密报告
 
-请通过 [GitHub 私密漏洞报告](https://github.com/Chillax73/codex-dev-services-manager/security/advisories/new) 向维护者报告安全问题。不要在公开 Issue、PR 或讨论区发布凭据或可识别个人的数据。若私密入口暂时不可用，可提交仅写“需要私密安全联系入口”的 Issue，不附漏洞细节。
+请通过 [GitHub 私密漏洞报告](https://github.com/Chillax73/codex-service-manager/security/advisories/new) 向维护者报告安全问题。不要在公开 Issue、PR 或讨论区发布凭据或可识别个人的数据。若私密入口暂时不可用，可提交仅写“需要私密安全联系入口”的 Issue，不附漏洞细节。
 
 报告说明版本/commit、macOS/架构、影响和最小复现。使用临时测试项目和占位凭据；不要上传完整环境、manager.sqlite、原始日志/截图、聊天、真实项目目录或用户数据。检查启动 argv、显式环境、健康 URL 的用户信息/查询参数、stdout/stderr 中的密码与 token；少量必要片段也要手动脱敏。
 

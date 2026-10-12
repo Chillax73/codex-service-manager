@@ -1,6 +1,6 @@
 # 开源收尾核验
 
-日期：2026-10-12。公开仓库 codex-dev-services-manager 使用独立脱敏初始提交与 MIT；原私有仓库继续保留。公开历史不包含旧私有提交；不声称原私有对象的 GitHub 缓存已清除。
+日期：2026-10-12。公开仓库 codex-service-manager 使用独立脱敏初始提交与 MIT；旧仓库不再从 GitHub 查询到；用户确认该调整，原本机源码和历史保留。公开历史不包含旧私有提交；不声称原私有对象的 GitHub 缓存已清除。
 
 | 工作 | 当前证据 |
 |---|---|
@@ -11,8 +11,8 @@
 | 依赖公告 | Vite 7.3.7、source-map-js 1.2.2；npm audit 当前零告警。未将该结果扩大为所有 Java/系统组件的漏洞审计。 |
 | 构建/截图 | 当前 Mac 构建与 ad-hoc 签名校验通过；README 截图为真实隔离测试窗口，不替代正式 UI/Codex 退出验收。 |
 | 使用/协作 | 上手、卸载、排障、CONTRIBUTING、SECURITY、Issue/PR 模板已补齐；GitHub 私密漏洞报告已启用。 |
-| 基础 CI | 工作流已准备，远端执行结果待发布后核对。 |
-| Docker CI | 独立手动工作流已准备，远端执行结果待核对。 |
-| 首版发布 | CHANGELOG 已准备，v0.1.0 源码开发者预览待 CI 通过后发布。 |
+| 基础 CI | macOS 14/15 构建、签名、Python 回归/隐私与 npm 审核通过：[Actions](https://github.com/Chillax73/codex-service-manager/actions/runs/38224121884)。 |
+| Docker CI | 独立 Linux runner 的 Docker/Compose 与真实失败场景通过：[Actions](https://github.com/Chillax73/codex-service-manager/actions/runs/38224127094)。 |
+| 首版发布 | CHANGELOG 已准备，CI/集成通过；v0.1.0 以该验证版本的源码和本文档核验结果发布。 |
 
 原有 A-01 至 A-16 是先前 Mac 的本机验收，见 [报告](VALIDATION.md)。此次没有改变产品服务模型或原生界面代码；CI 不声称拥有真实桌面或 Codex 退出证据。源码预览不包含 `.app`、Python 运行时、第三方依赖或用户状态。

@@ -5,8 +5,8 @@
 按 README 构建并打开应用后，在自己的测试项目目录通过绝对路径调用 scripts/csm。可以登记一个不监听端口的后台任务：
 
 ```sh
-/path/to/codex-dev-services-manager/scripts/csm launch --name demo-task --task -- /usr/bin/python3 -c 'import time; print("demo", flush=True); time.sleep(60)'
-/path/to/codex-dev-services-manager/scripts/csm list
+/path/to/codex-service-manager/scripts/csm launch --name demo-task --task -- /usr/bin/python3 -c 'import time; print("demo", flush=True); time.sleep(60)'
+/path/to/codex-service-manager/scripts/csm list
 ```
 
 界面可停止/重启并查看每次历史；将返回 service ID 替换到 `csm stop <serviceID>`，通过管理入口停止测试任务。界面关闭不会停止服务。
@@ -28,7 +28,7 @@
 ## 卸载与数据清理
 
 1. 在 UI/CLI 中逐项停止自己希望结束的服务；持续运行的服务和保留例外需明确决定。`end <projectID>`遵循项目开关，不保证停掉保留例外。不要用旧 PID 直接 kill。
-2. 在每个接入项目执行 `/usr/bin/python3 /path/to/codex-dev-services-manager/scripts/integrate.py /path/to/project --remove`。它只移除标记段落，保留其他指令；检查首次备份 AGENTS.md.csm-backup。原型 hooks 如曾安装，检查项目 .codex/hooks.json，将指向 validation/hook_recorder.py 的本工具条目逐项移除，保留其他 hooks；勿删除整个混合配置。
+2. 在每个接入项目执行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/integrate.py /path/to/project --remove`。它只移除标记段落，保留其他指令；检查首次备份 AGENTS.md.csm-backup。原型 hooks 如曾安装，检查项目 .codex/hooks.json，将指向 validation/hook_recorder.py 的本工具条目逐项移除，保留其他 hooks；勿删除整个混合配置。
 3. 在设置中查看状态目录。退出管理应用后独立退出观察器仍可能存活；用活动监视器检查 ServiceManager 的完整命令及 `--watch --root`，仅退出属于本工具、同一状态目录的观察器。不要按名称批量 kill，不要退出其他状态目录或项目的对象。
 4. 确认没有登记服务/观察器在使用数据后，备份需要保留的历史，再通过 Finder 删除 `~/Library/Application Support/Codex Service Manager/`（自定义 CSM_STATE_DIR 以实际配置为准）。删除数据库不会自动停止服务，不要边运行边删除。
 5. 删除本地 `.app` 与源码目录。容器、镜像和卷不会随卸载删除；仅在确认归属和数据已备份后用 Docker 的显式命令单独处理。

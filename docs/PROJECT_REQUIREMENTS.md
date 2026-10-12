@@ -211,7 +211,7 @@
 
 ### 9.2 第一轮验证结果
 
-证据见 [第一轮验证报告](../validation/ROUND1_REPORT.md) 和 [hooks 审核结果](../validation/hook-trust-results.json)。
+证据见 [第一轮验证报告](../validation/ROUND1_REPORT.md) 和 `hook-trust-results.json`（仅本机原始证据）。
 
 | 能力 | 当前结论 | 不能据此推导的内容 |
 |---|---|---|

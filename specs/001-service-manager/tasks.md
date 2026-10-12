@@ -31,7 +31,9 @@ T10：A-01 至 A-16 证据映射见 acceptance.md；ui-cleanup.json 保存归档
 - [x] O01 独立公开 Git 历史和 MIT。
 - [x] O02 依赖/来源授权清单。
 - [x] O03 全新克隆目录与工具查找、安装步骤、隔离状态。
-- [ ] O04 基础 CI 与独立 Docker 工作流实际执行。
+- [x] O04 基础 CI 与独立 Docker 工作流实际执行。
 - [x] O05 README、真实脱敏截图、卸载与排障。
 - [x] O06 CONTRIBUTING/SECURITY 与 Issue/PR 模板。
 - [ ] O07 CHANGELOG、v0.1.0 源码开发者预览。
+
+O02–O06 证据：[开源核验](../../docs/results/OPEN_SOURCE_READINESS.md)、依赖清单、真实测试截图；GitHub macOS CI 与独立 Docker 集成都已实际通过。

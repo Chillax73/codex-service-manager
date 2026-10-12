@@ -35,7 +35,7 @@
 
 项目配置已安装在 `.codex/hooks.json`。用户随后授权代为审核，已通过正常 Folder access 和 hooks 浏览器完成当前项目及 5 个 hooks 的信任。配置接口核对全部 trusted/enabled，项目层已加载；没有使用绕过信任选项。事件脚本仅记录本地元数据。
 
-关闭两次本地 CLI 测试会话后，收到两条真实 SessionEnd 记录。当前桌面聊天执行 hook-probe 成功，但没有对应 PreToolUse/PostToolUse 记录；现有桌面会话是否需要重新加载配置或是否支持同样 hooks 尚未确证。详见 [审核结果](hook-trust-results.json)。
+关闭两次本地 CLI 测试会话后，收到两条真实 SessionEnd 记录。当前桌面聊天执行 hook-probe 成功，但没有对应 PreToolUse/PostToolUse 记录；现有桌面会话是否需要重新加载配置或是否支持同样 hooks 尚未确证。详见 `hook-trust-results.json`（仅本机原始证据）。
 
 ## 初次失败及修复
 
