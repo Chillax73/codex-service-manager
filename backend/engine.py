@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import urllib.request
+import unicodedata
 import urllib.parse
 import uuid
 
@@ -630,17 +631,118 @@ def observe(service_id):
             'can_start': state not in ACTIVE, 'can_restart': state != 'unknown'}
 
 
+def project_record(project_id):
+    item = query('SELECT * FROM projects WHERE id=?', [project_id], True)
+    if not item:
+        raise ValueError('项目不存在')
+    return item
+
+
+def rename_project(project_id, name):
+    project_record(project_id)
+    if not isinstance(name, str):
+        raise ValueError('项目名称必须是文字')
+    name = name.strip()
+    if not name or len(name) > 100:
+        raise ValueError('项目名称须为 1–100 个字符')
+    if any(unicodedata.category(c) in ('Cc', 'Cf', 'Zl', 'Zp') for c in name):
+        raise ValueError('项目名称不能包含控制字符、不可见格式或换行')
+    write('UPDATE projects SET name=? WHERE id=?', [name, project_id])
+    return project_record(project_id)
+
+
+def project_delete_preview(project_id):
+    proj = project_record(project_id)
+    ids = query('SELECT id FROM services WHERE project_id=? ORDER BY name', [project_id])
+    blockers = []
+    labels = {'starting': '启动中', 'running': '运行中', 'stopping': '停止中',
+              'stop_failed': '停止失败', 'unknown': '身份或状态未知'}
+    for row in ids:
+        item = observe(row['id'])
+        unfinished = query('SELECT id FROM runs WHERE service_id=? AND ended IS NULL LIMIT 1', [item['id']], True)
+        if item['state'] in ACTIVE or item['can_stop'] or unfinished:
+            state = item['state'] if item['state'] in ACTIVE else 'unknown'
+            blockers.append({'id': item['id'], 'name': item['name'], 'state': state,
+                'reason': item.get('problem') or labels.get(state, '存在未结束的运行记录，需先核对')})
+    return {'project': proj, 'service_count': len(ids),
+        'run_count': query('SELECT COUNT(*) AS count FROM runs WHERE service_id IN (SELECT id FROM services WHERE project_id=?)', [project_id], True)['count'],
+        'operation_count': query('SELECT COUNT(*) AS count FROM operations WHERE target=? OR target IN (SELECT id FROM services WHERE project_id=?)', [project_id, project_id], True)['count'],
+        'blockers': blockers, 'can_delete': not blockers}
+
+
+def delete_project(project_id):
+    preview = project_delete_preview(project_id)
+    if preview['blockers']:
+        detail = '；'.join(item['name'] + '：' + item['reason'] for item in preview['blockers'][:5])
+        raise RuntimeError('不能删除项目：' + detail + '。请先手动处理这些服务，再重新检查。')
+    trash_id = uid()
+    with database() as db:
+        archive = {'deleted_at': timestamp(), 'project': preview['project'],
+            'services': [dict(row) for row in db.execute('SELECT * FROM services WHERE project_id=?', [project_id])],
+            'runs': [dict(row) for row in db.execute('SELECT * FROM runs WHERE service_id IN (SELECT id FROM services WHERE project_id=?)', [project_id])],
+            'operations': [dict(row) for row in db.execute('SELECT * FROM operations WHERE target=? OR target IN (SELECT id FROM services WHERE project_id=?)', [project_id, project_id])]}
+        db.execute('INSERT INTO metadata VALUES (?,?)', ['deleted_project:' + trash_id, json.dumps(archive)])
+        db.execute('DELETE FROM operations WHERE target=? OR target IN (SELECT id FROM services WHERE project_id=?)', [project_id, project_id])
+        db.execute('DELETE FROM runs WHERE service_id IN (SELECT id FROM services WHERE project_id=?)', [project_id])
+        db.execute('DELETE FROM services WHERE project_id=?', [project_id])
+        db.execute('DELETE FROM projects WHERE id=?', [project_id])
+    return {'id': project_id, 'trash_id': trash_id, 'removed_services': preview['service_count'],
+            'removed_runs': preview['run_count'], 'removed_operations': preview['operation_count']}
+
+
+def deleted_projects():
+    items = []
+    for row in query("SELECT key,value FROM metadata WHERE key GLOB 'deleted_project:*'"):
+        archive = json.loads(row['value'])
+        items.append({'id': row['key'].split(':', 1)[1], 'name': archive['project']['name'],
+            'cwd': archive['project']['cwd'], 'deleted_at': archive['deleted_at'],
+            'service_count': len(archive['services']), 'run_count': len(archive['runs'])})
+    return sorted(items, key=lambda item: item['deleted_at'], reverse=True)
+
+
+def restore_project(trash_id):
+    row = query('SELECT value FROM metadata WHERE key=?', ['deleted_project:' + trash_id], True)
+    if not row:
+        raise ValueError('已删除的项目记录不存在')
+    archive = json.loads(row['value'])
+    proj = archive['project']
+    if query('SELECT id FROM projects WHERE id=? OR cwd=?', [proj['id'], proj['cwd']], True):
+        raise RuntimeError('同一目录已有项目登记，无法恢复；不会覆盖现有项目')
+    columns = {'projects': ('id', 'cwd', 'name', 'manual', 'codex_exit'),
+        'services': ('id', 'project_id', 'name', 'kind', 'spec', 'keep', 'group_id'),
+        'runs': ('id', 'service_id', 'started', 'ended', 'state', 'exit_code', 'runtime', 'error', 'log'),
+        'operations': ('id', 'target', 'action', 'trigger', 'started', 'ended', 'result', 'error')}
+    try:
+        with database() as db:
+            for table, fields in columns.items():
+                records = [proj] if table == 'projects' else archive[table]
+                for item in records:
+                    db.execute('INSERT INTO ' + table + ' (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')',
+                               [item[field] for field in fields])
+            db.execute('DELETE FROM metadata WHERE key=?', ['deleted_project:' + trash_id])
+    except sqlite3.IntegrityError as exc:
+        raise RuntimeError('登记或历史标识已被占用，恢复已取消；现有记录和回收记录保持不变') from exc
+    return {'project': project_record(proj['id']), 'restored_services': len(archive['services']), 'restored_runs': len(archive['runs'])}
+
+
 def snapshot():
     ids = [row['id'] for row in query('SELECT id FROM services ORDER BY name')]
+    def observe_existing(sid):
+        try:
+            return observe(sid)
+        except ValueError:
+            if not query('SELECT id FROM services WHERE id=?', [sid], True):
+                return None  # A concurrent project deletion completed after the ID read.
+            raise
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        services = list(pool.map(observe, ids))
+        services = [item for item in pool.map(observe_existing, ids) if item is not None]
     watcher = query('SELECT value FROM metadata WHERE key=?', ['watcher'], True)
     watcher = json.loads(watcher['value']) if watcher else None
     if watcher:
         watcher['alive'] = matches(watcher.get('pid'), watcher.get('birth'), '--watch') and timestamp() - watcher.get('updated', 0) < 20
     return {'projects': query('SELECT * FROM projects ORDER BY name'), 'services': services,
             'operations': query('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
-            'watcher': watcher, 'generated_at': timestamp(), 'state_dir': str(ROOT)}
+            'watcher': watcher, 'deleted_projects': deleted_projects(), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
 
 
 def batch(req, trigger='user'):
@@ -734,7 +836,15 @@ def dispatch(req):
             return log.read().decode(errors='replace')
     if action == 'discover':
         return discover()
+    if action == 'project_delete_preview':
+        return project_delete_preview(req['id'])
     with mutation_lock():
+        if action == 'project_rename':
+            return rename_project(req['id'], req.get('name'))
+        if action == 'project_delete':
+            return delete_project(req['id'])
+        if action == 'project_restore':
+            return restore_project(req['id'])
         if action == 'launch':
             return launch(req)
         if action == 'register_container':

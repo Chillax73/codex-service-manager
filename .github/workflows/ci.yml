@@ -33,6 +33,8 @@ jobs:
         run: /usr/bin/python3 tests/test_endpoints.py
       - name: Real process acceptance
         run: /usr/bin/python3 tests/test_engine.py
+      - name: Project rename, delete and restore
+        run: /usr/bin/python3 tests/test_projects.py
       - name: Native build
         run: ./scripts/build.sh
       - name: Ad-hoc signature

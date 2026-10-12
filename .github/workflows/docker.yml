@@ -22,3 +22,5 @@ jobs:
         run: /usr/bin/python3 tests/verify_docker.py
       - name: Real container failure acceptance
         run: /usr/bin/python3 tests/verify_docker_failures.py
+      - name: Project rename, delete and restore with real containers
+        run: /usr/bin/python3 tests/verify_project_docker.py

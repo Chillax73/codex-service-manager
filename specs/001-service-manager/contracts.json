@@ -15,7 +15,22 @@
     {"action": "end_project", "project_id": "project-id"},
     {"action": "history", "id": "service-id"},
     {"action": "logs", "id": "service-id", "run_id": "optional-run-id"},
-    {"action": "cleanup", "days": 30}
+    {"action": "cleanup", "days": 30},
+    {"action": "project_rename", "id": "project-id", "name": "My project"},
+    {"action": "project_delete_preview", "id": "project-id"},
+    {"action": "project_delete", "id": "project-id"},
+    {"action": "project_restore", "id": "deleted-project-archive-id"}
   ],
-  "invariants": ["Mutations acquire a nonblocking exclusive lock", "Stop failure aborts restart", "Snapshots omit environment values", "Docker engine errors produce unknown state", "Batch results are per service and deduplicated"]
+  "invariants": [
+    "Mutations acquire a nonblocking exclusive lock",
+    "Stop failure aborts restart",
+    "Snapshots omit environment values",
+    "Docker engine errors produce unknown state",
+    "Batch results are per service and deduplicated",
+    "Project rename preserves cwd and identities",
+    "Project deletion rechecks activity and unknown state under mutation lock",
+    "Project deletion archives records transactionally without touching processes, source, containers or volumes",
+    "Restore never starts services or overwrites existing project/service IDs",
+    "Deleted project summaries omit private specifications"
+  ]
 }
