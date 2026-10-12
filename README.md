@@ -1,6 +1,6 @@
 # Codex Service Manager
 
-一个供个人开发使用的原生 macOS 服务管理应用。本项目是独立第三方工具，与 OpenAI 没有官方关联。按项目查看 Codex 配套入口启动的本机服务、后台任务、Docker 容器和 Compose 服务，并管理启停、日志与运行历史。
+一个供个人开发使用的原生 macOS 服务管理应用。本项目是独立第三方工具，与 OpenAI 没有官方关联。主要用于管理 Codex 在本机开发时启动的服务：通过配套入口按项目登记前端、后端、后台任务、Docker 容器和 Compose 服务，查看状态、启停、日志与运行历史。
 
 当前版本已完成本机 A-01 至 A-16 验收，包含真实 Codex 退出检测。真实桌面实测环境为 Apple Silicon / macOS 15.7.3；构建目标 macOS 13+。macOS 14/15 的构建与引擎回归已通过 GitHub CI；Intel 和其他系统版本的窗口/Codex 退出流程尚未人工验收。
 
@@ -42,7 +42,7 @@ open "build/Codex Service Manager.app"
 /usr/bin/python3 scripts/integrate.py "$PWD"
 ```
 
-接入其他项目，把最后一个参数改为该项目目录。安装器保留原指令、保存首次备份，并写入当前克隆路径的配套入口；生成的本机指令不提交 Git。
+接入其他项目，把最后一个参数改为该项目目录。在 Codex 中重新打开目标项目并开始新会话，确保加载更新的 AGENTS.md；然后让 Codex“按照本项目 AGENTS.md 启动前端/后端服务并登记到服务管理器”。安装器保留原指令、保存首次备份，并写入当前克隆路径的配套入口；生成的本机指令不提交 Git。
 
 ```sh
 # 以下命令在目标项目目录执行；把入口路径替换为当前克隆的路径。
@@ -52,6 +52,40 @@ open "build/Codex Service Manager.app"
 ```
 
 服务脱离启动工具进程存活，管理界面显示其记录。已有容器在创建后通过 `csm container` 登记；已有 Compose 项目使用原项目名登记。完整命令见 [接入说明](docs/INTEGRATION.md)。未经配套入口启动的普通进程只发现，不承诺自动接管或重启。
+
+## Codex Hooks 的作用与使用
+
+当前正式版使用下列机制管理 Codex 启动的服务：
+
+| 机制 | 职责 |
+|---|---|
+| `AGENTS.md` + `scripts/csm` | 引导 Codex 遵循项目约定，通过入口启动/登记服务，保存项目归属与每次运行。 |
+| 原生退出观察器 | 监听 Codex 应用最后一个实例终止，按项目配置停止服务，保留例外优先。 |
+| `validation/` 中的 Codex hooks | 可选的早期实验，仅记录生命周期/工具事件元数据，未接入正式服务自动登记或启停。 |
+
+日常管理按上面的“接入项目”使用即可，无需安装实验 hooks。项目指令是让 Codex 使用登记入口的约定；当前 hooks 不会自动改写普通启动命令或接管所有已有进程。`SessionEnd` 也可能由归档、删除会话或闲置触发，不能作为应用退出的唯一判断。[OpenAI Hooks 官方说明](https://learn.chatgpt.com/docs/hooks#sessionend)
+
+如需复验 hooks，在本仓库克隆根目录进行：
+
+1. 阅读 `validation/install_hooks.py` 和 `validation/hook_recorder.py`，然后生成本机配置：
+
+   ```sh
+   /usr/bin/python3 validation/install_hooks.py
+   ```
+
+   生成 `.codex/hooks.json` 和 `validation/hooks.json`，配置五个事件：`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop`、`SessionEnd`。已有不同配置时安装器拒绝覆盖，请先处理冲突或使用独立克隆目录试验。
+
+2. 从此目录启动 `codex` CLI，按正常流程信任项目；在 CLI 内输入 `/hooks`，阅读并信任这些 hooks。安装脚本不授予信任；修改定义后需要重新审核。[官方审核说明](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)
+
+3. 可在另一个终端、同一仓库根目录探测配置：
+
+   ```sh
+   /usr/bin/python3 validation/verify_hooks.py --project-only
+   ```
+
+   它检查配置与信任元数据，不会调用模型，也不证明桌面工具事件已经触发。请核对 `/hooks` 中的本项目配置与启用状态，再让 Codex 执行指南中的无害标记命令，查看本机 `validation/.state/hook-events.jsonl` 的实际事件。
+
+事件文件包含项目路径和会话标识；仅留本机，勿提交 Git 或作为原始附件上传。关闭实验时先在 `/hooks` 禁用本工具条目，再仅移除本工具配置，保留其他 hooks。完整事件复验、路径/版本排障与移除步骤见 [Hooks 使用指南](docs/HOOKS.md)；[原型验证记录](validation/ROUND1_REPORT.md) 与正式产品验收分别保存。
 
 ## 结束策略与边界
 

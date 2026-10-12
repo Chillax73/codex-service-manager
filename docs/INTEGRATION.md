@@ -25,3 +25,7 @@
 退出观察器由原生应用或配套入口启动，订阅目标 bundle ID 的最后实例终止。当前目标 `com.openai.codex`，可用状态目录的 `watcher-config.json` 修改 `bundle_ids` 后重启观察器。它独立于管理窗口和 Codex 生存，强制退出也产生系统终止通知；关机不保证清理完成。
 
 参考官方文档：[项目指令](https://learn.chatgpt.com/docs/agents-md)、[Skills](https://learn.chatgpt.com/docs/build-skills)。这里采用项目指令接入，尚未发布 Marketplace 插件。
+
+## 可选 Hooks 实验
+
+正式接入依赖上述 AGENTS.md 和 scripts/csm；早期 hooks 只记录事件，尚未用于自动登记或启停服务。安装、审核、复验与移除见 [Hooks 使用指南](HOOKS.md)，不应把 SessionEnd 直接映射为应用退出。

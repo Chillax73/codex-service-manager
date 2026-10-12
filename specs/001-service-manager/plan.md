@@ -45,3 +45,7 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 ## 开源交付方案
 
 在独立公开快照中实施，不迁移私有 Git 对象。测试 support 模块统一创建 ignored 工作目录并解析工具；真实项目默认使用唯一测试状态。应用继续使用系统 Python，不打包运行时。CI 使用只读权限与固定官方 checkout 提交，不上传原始证据。Docker 用独立临时 runner；真实窗口截图仅测试数据，经人工查看和 SHA-256 白名单后发布。依赖只供测试安装，源码发行包不包含 node_modules、JAR 或系统框架。首版采用 GitHub prerelease 自动生成源码归档，构建安装包/签名/公证留待二进制分发。
+
+## Hooks 文档补充
+
+在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。只改说明，不修改正式登记/退出链或自动安装、信任 hooks。

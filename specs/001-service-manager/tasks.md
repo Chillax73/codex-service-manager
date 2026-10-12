@@ -39,3 +39,9 @@ T10：A-01 至 A-16 证据映射见 acceptance.md；ui-cleanup.json 保存归档
 O02–O06 证据：[开源核验](../../docs/results/OPEN_SOURCE_READINESS.md)、依赖清单、真实测试截图；GitHub macOS CI 与独立 Docker 集成都已实际通过。
 
 O07：[v0.1.0 开发者预览](https://github.com/Chillax73/codex-service-manager/releases/tag/v0.1.0) 已发布，标签 6a52478、CI run 38224570507 通过；首版仅源码，不附未公证应用。
+
+## 文档补充
+
+- [x] D01 README 与 hooks 使用指南：正式机制/可选实验职责，安装、审核、核验、数据与移除边界。
+
+D01：README 的“Codex Hooks 的作用与使用”、docs/HOOKS.md 与接入/原型文档已对应；命令/事件对照源码和文档链接检查通过。仅文档更新，未安装 hooks、修改信任或合成桌面事件。
