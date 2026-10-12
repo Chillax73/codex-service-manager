@@ -35,6 +35,7 @@ def main():
     launch.add_argument('--port', type=int, action='append', default=[])
     launch.add_argument('--task', action='store_true')
     launch.add_argument('--env', action='append', default=[])
+    launch.add_argument('--source', choices=['companion', 'internal'], default='companion')
     launch.add_argument('argv', nargs=argparse.REMAINDER)
     container = sub.add_parser('container')
     container.add_argument('container_id')
@@ -49,6 +50,7 @@ def main():
     compose.add_argument('--register-only', action='store_true')
     sub.add_parser('list')
     sub.add_parser('discover')
+    sub.add_parser('capture-start')
     for action in ('start', 'stop', 'restart', 'force', 'history', 'logs'):
         sub.add_parser(action).add_argument('id')
     policy = sub.add_parser('policy')
@@ -68,6 +70,11 @@ def main():
     args = parser.parse_args()
     if args.root:
         engine.ROOT = args.root.expanduser().resolve()
+    if args.action == 'capture-start':
+        import capture
+        capture.ensure_collector()
+        print(json.dumps({'ok': True, 'result': '自动采集组件已启动'}, ensure_ascii=False))
+        return
     req = vars(args).copy()
     req.pop('root', None)
     if args.action == 'launch':

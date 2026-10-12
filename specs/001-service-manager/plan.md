@@ -4,7 +4,7 @@
 
 原生 `.app`（SwiftUI 工作区 + AppKit 菜单栏）→ JSON stdin/stdout RPC → Python 标准库管理引擎 → SQLite WAL。
 
-每个本机运行由独立监督进程持有子进程，脱离启动工具和 UI 生存。监督进程负责信号、输出滚动、自然完成和退出码。管理请求通过文件锁串行写入；读操作独立，GUI 在后台执行不阻塞主线程。
+每个经配套入口启动的本机运行由独立监督进程持有子进程，脱离启动工具和 UI 生存。监督进程负责信号、输出滚动、自然完成和退出码。管理请求通过文件锁串行写入；读操作独立，GUI 在后台执行不阻塞主线程。
 
 独立原生观察器订阅 NSWorkspace 应用终止，按 bundle ID 与实例集合判断最后实例退出，再调用引擎批量结束。观察器无需模型、无需聊天 Hook；SessionEnd 从不作为退出信号。退出观察器有独立 PID/身份状态和日志。
 
@@ -12,7 +12,27 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 
 配套入口 `scripts/csm` 提供 launch / container / compose / list / stop / restart 等命令，cwd 自动成为项目。项目接入安装器加入带边界标记的 AGENTS.md 段落（可移除），要求 Codex 服务启动走该入口。接入文档随项目分发，不要求依赖未证实的 hooks。
 
-## 数据模型
+## 任意本机聊天自动观察（2026-10-12）
+
+新增用户级 PreToolUse/PostToolUse hook 与独立采集组件。PreToolUse 在原命令前后加入 arm 检查点，通过本机临时目录的 0600 FIFO 将 shell 父进程身份发送给采集器，避免在业务沙箱里访问数据库或进程表。末尾检查点在 shell 退出前记录直接后台子进程，并用独立变量保留原命令退出码；显式 exec/exit 维持原行为、跳过末尾检查点。保留原命令文本、shell、cwd、stdin/stdout；arm 失败不阻止业务命令。不对 write_stdin 重复插入。工具命令仅临时识别 Docker/Compose 启动信息，持久化事件只含白名单元数据，不保存完整命令/输出/聊天或环境。
+
+采集组件通过 scripts/csm 作为内部后台任务启动，使用状态目录作稳定 cwd，并持有单实例锁；约每 0.5 秒采集进程树，记住已验证后代的 PID+出生身份以跨 reparent 跟踪。监听进程按实际 PID 去重，一次脚本产生多个监听进程分别记录，已由配套入口管理的进程排除。持续 30 秒的无监听叶子进程列为后台任务。Compose 关联需实际标签与启动上下文匹配，单容器需工具返回的容器 ID；没有可靠归属的容器不认领。Docker 观察使用字段白名单，不读取完整容器环境或健康日志。组件独立于管理窗口/聊天生存，UI 展示心跳和恢复入口。
+
+自动观察服务继续使用 services/runs，spec 增加 management=observed、source=global_hook、归属依据；runtime 保存实际 PID/出生时间或容器 ID。状态刷新不依赖监督进程，进程退出记录结束时间但未知退出码；不恢复之前未采集日志。自动观察对象任何控制请求由后端拒绝，批量/结束操作跳过。后台内部采集任务从常规列表排除，状态通过 metadata 展示。采集器状态文件和事件均在状态目录并受 0700/0600 权限保护。
+
+用户级安装器保留无关 hooks、首次备份、只移除自己的 handler，不写信任数据库，不改业务项目。验证先实测当前桌面回调，再验证跨项目、脚本多进程、直接容器/Compose、去重、身份变化、观察器恢复和实际窗口。无法在当前聊天自动重新加载用户配置时保留安装结果，并明确需要正常审核和新聊天的验收边界。
+
+## 旧聊天与后台发现：待实施设计
+
+旧聊天复查已发现：配置检查能看到两个 trusted/enabled handler，采集器心跳正常，但同一旧聊天的后续启动没有 arm 检查点或采集事件。换窗口继续旧聊天不等于加载新配置。`check_capture_hooks.py` 启动独立短时 app-server 读取配置，不连接桌面共享运行时，也不能确认或修复旧聊天加载状态。
+
+下一步先评估正常共享运行时配置重载接口，实测同一旧聊天的无害命令和测试服务；目前没有可对用户承诺的重载命令。不得通过编辑信任数据库或放宽沙箱实现重载，不能直接退出 Codex 作为无副作用的修复（退出可能触发已管理项目的结束策略）。
+
+后台发现兜底仍待实施：基于实际进程身份、cwd 和指定容器标签产生候选，保留独立的发现来源与归属依据；仅凭端口、可执行名称或时间不能标为 Codex 启动。证据不足保留在发现列表，不能伪造启动事件或事后完整历史。首轮需验证旧聊天启动、原有对象、多项目/worktree、无关进程排除和已退出对象，再扩展包装脚本与脚本内部 Docker。
+
+复杂脚本重启另行实施，只有确认控制对象、必要环境与启动方式后才升级为已管理；自动观察本身不改变业务进程的存活方式。上述三个方向尚未交付，任务与验收分别记录为 T16–T18、G-08–G-10。
+
+## 数据模型（现有）
 
 - projects(id, cwd 唯一, name, manual, codex_exit)
 - services(id, project_id, name, kind, spec JSON, keep, group_id)
@@ -24,9 +44,9 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 
 ## 接口
 
-`engine.py rpc` 从 stdin 读取单个 JSON `{action, ...}`，stdout 输出 `{ok, result}` 或 `{ok:false,error}`，错误退出非零。主要 action：snapshot、launch、register_container、register_compose、start/stop/restart/force、project_policy、service_keep、end_project、codex_exit、history、logs、discover、cleanup、watcher_event。
+`engine.py rpc` 从 stdin 读取单个 JSON `{action, ...}`，stdout 输出 `{ok, result}` 或 `{ok:false,error}`，错误退出非零。主要 action：snapshot、capture_start、launch、register_container、register_compose、start/stop/restart/force、project_policy、service_keep、end_project、codex_exit、history、logs、discover、cleanup、watcher_event。
 
-所有启动保存 argv 数组，不通过拼接 shell 命令执行；GUI 手工输入命令仅由 shlex 分词，需要 shell 语义时明确使用 shell argv。
+配套入口的启动保存 argv 数组，不通过拼接 shell 命令执行；GUI 手工输入命令仅由 shlex 分词，需要 shell 语义时明确使用 shell argv。
 
 ## 界面设计
 
@@ -48,7 +68,7 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 
 ## Hooks 文档补充
 
-在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。只改说明，不修改正式登记/退出链或自动安装、信任 hooks。
+在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。此节记录早期 D01 文档任务；用户级采集实现与其正常信任审核另见自动观察章节，不应将 validation/ 实验与当前采集器混用。
 
 ## 项目管理实现
 

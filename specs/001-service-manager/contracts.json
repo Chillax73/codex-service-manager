@@ -4,6 +4,7 @@
   "error": {"ok": false, "error": "diagnostic string; exit code 1"},
   "examples": [
     {"action": "snapshot"},
+    {"action": "capture_start"},
     {"action": "launch", "name": "frontend", "cwd": "/absolute/project", "kind": "process", "argv": ["npm", "run", "dev"], "env": {"PORT": "5173"}, "url": "http://127.0.0.1:5173", "ports": [5173]},
     {"action": "register_container", "container_id": "full-or-resolvable-id", "cwd": "/absolute/project"},
     {"action": "register_compose", "file": "/absolute/project/compose.yaml", "cwd": "/absolute/project", "compose_project": "explicit-or-generated", "env": {}, "start": true},
@@ -31,6 +32,19 @@
     "Project deletion rechecks activity and unknown state under mutation lock",
     "Project deletion archives records transactionally without touching processes, source, containers or volumes",
     "Restore never starts services or overwrites existing project/service IDs",
-    "Deleted project summaries omit private specifications"
-  ]
+    "Deleted project summaries omit private specifications",
+    "Observed services reject start, stop, restart and force; batch and project end skip them",
+    "Internal capture services are omitted from normal snapshots and skipped by batch control",
+    "Capture hooks persist only whitelisted metadata, not raw commands, output, environments or transcripts",
+    "Configured user hooks and a live collector do not prove that an existing desktop thread loaded hooks",
+    "capture_start uses a collector startup lock and the registered launch path without nesting the global mutation lock"
+  ],
+  "snapshot_fields": {
+    "service.management": "managed | observed",
+    "service.can_start": "boolean; false for observed",
+    "service.can_stop": "boolean; false for observed",
+    "service.can_restart": "boolean; false for observed",
+    "service.can_logs": "boolean; false for observed native processes/tasks",
+    "capture": "null or local collector metadata with computed alive; not a desktop hook reload status"
+  }
 }

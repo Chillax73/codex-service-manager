@@ -136,6 +136,8 @@ struct ServiceItem: Identifiable {
     var canStop: Bool { raw["can_stop"] as? Bool ?? false }
     var canStart: Bool { raw["can_start"] as? Bool ?? false }
     var canRestart: Bool { raw["can_restart"] as? Bool ?? false }
+    var observed: Bool { raw["management"] as? String == "observed" }
+    var running: Bool { ["running", "stop_failed", "stopping"].contains(state) }
     var keep: Bool { (raw["keep"] as? NSNumber)?.boolValue ?? false }
     var spec: [String: Any] { raw["spec"] as? [String: Any] ?? [:] }
     var run: [String: Any] { raw["run"] as? [String: Any] ?? [:] }
@@ -143,6 +145,7 @@ struct ServiceItem: Identifiable {
     var runtimeIdentity: String {
         if let ids = runtime["container_ids"] as? [String], !ids.isEmpty { return ids.joined(separator:"\n") }
         if let pid = runtime["child_pid"] as? Int { return "PID \(pid) · 监督 PID \(runtime["supervisor_pid"] as? Int ?? 0)" }
+        if let pid = runtime["pid"] as? Int { return "PID \(pid) · 自动观察" }
         return "尚无已确认的运行对象"
     }
     var portSummary: String {
@@ -156,7 +159,7 @@ struct ServiceItem: Identifiable {
             return bindings.isEmpty ? "未发布端口" : bindings.joined(separator:"\n")
         }
         let ports = spec["ports"] as? [Int] ?? []
-        return ports.isEmpty ? "未配置" : ports.map(String.init).joined(separator:", ") + "（启动配置）"
+        return ports.isEmpty ? "未配置" : ports.map(String.init).joined(separator:", ") + (observed ? "（实际监听）" : "（启动配置）")
     }
     var url: String? { spec["url"] as? String }
     var icon: String { ["process": "terminal", "task": "checklist", "container": "shippingbox", "compose": "square.stack.3d.up"][kind] ?? "terminal" }
@@ -190,19 +193,20 @@ final class Store: ObservableObject {
     @Published var logRunID: String? = nil
     @Published var history: [[String: Any]] = []
     @Published var watcher: [String: Any] = [:]
+    @Published var capture: [String: Any] = [:]
     @Published var discovery: [String: Any] = [:]
     var timer: Timer?
     var onRefresh: (() -> Void)?
     var revision = 0
-    var runningCount: Int { services.filter { $0.canStop }.count }
+    var runningCount: Int { services.filter { $0.running }.count }
     var filtered: [ServiceItem] {
         services.filter { item in
             (selectedProject == "all" || item.projectID == selectedProject) &&
             (search.isEmpty || item.name.localizedCaseInsensitiveContains(search) || item.typeName.localizedCaseInsensitiveContains(search)) &&
-            (filter == "all" || (filter == "running" && item.canStop) || (filter == "attention" && (item.problem != nil || item.health == "unavailable" || item.state == "unknown" || item.state == "failed")))
+            (filter == "all" || (filter == "running" && item.running) || (filter == "attention" && (item.problem != nil || item.health == "unavailable" || item.state == "unknown" || item.state == "failed")))
         }
     }
-    var displayedRunningCount: Int { filtered.filter { $0.canStop }.count }
+    var displayedRunningCount: Int { filtered.filter { $0.running }.count }
     var selected: ServiceItem? { services.first { $0.id == selectedService } }
     var currentProject: ProjectItem? { projects.first { $0.id == selectedProject } }
     func start() {
@@ -234,6 +238,7 @@ final class Store: ObservableObject {
                     self.services = (data["services"] as? [[String: Any]] ?? []).map { ServiceItem(raw: $0) }
                     self.operations = data["operations"] as? [[String: Any]] ?? []
                     self.watcher = data["watcher"] as? [String: Any] ?? [:]
+                    self.capture = data["capture"] as? [String: Any] ?? [:]
                     if self.selectedProject != "all", !self.projects.contains(where: { $0.id == self.selectedProject }) { self.selectedProject = "all" }
                     if let id = self.selectedService, !self.services.contains(where: { $0.id == id }) {
                         self.selectedService = nil; self.logs = ""; self.history = []; self.logRunID = nil
@@ -376,7 +381,7 @@ struct MainView: View {
                     VStack(spacing:12) {
                         Image(systemName:"terminal").font(.system(size:38)).foregroundStyle(.secondary)
                         Text(store.services.isEmpty ? "还没有登记的服务" : "没有符合条件的服务").font(.headline)
-                        Text("通过配套入口启动服务，或添加已有容器。").font(.caption).foregroundStyle(.secondary)
+                        Text("启用全局自动观察后，任意本机聊天启动的服务会出现在这里。").font(.caption).foregroundStyle(.secondary)
                         Button("添加服务") { adding = true }
                     }.frame(maxWidth:.infinity,maxHeight:.infinity)
                 } else {
@@ -386,7 +391,7 @@ struct MainView: View {
                                 Image(systemName:item.icon).font(.title3).frame(width:24).foregroundStyle(.secondary)
                                 VStack(alignment:.leading,spacing:5) {
                                     HStack { Text(item.name).font(.headline); if item.keep { Image(systemName:"pin.fill").font(.caption).foregroundStyle(.secondary) } }
-                                    Text(item.typeName + " · " + stateLabel(item.state)).font(.caption).foregroundStyle(item.state == "failed" || item.state == "unknown" ? Color.orange : Color.secondary)
+                                    Text(item.typeName + " · " + stateLabel(item.state) + (item.observed ? " · 自动观察" : "")).font(.caption).foregroundStyle(item.state == "failed" || item.state == "unknown" ? Color.orange : Color.secondary)
                                     if let url = item.url { Text(url).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1) }
                                 }
                                 Spacer()
@@ -424,24 +429,27 @@ struct MainView: View {
                         }
                     }
                     if let problem = item.problem { Text(problem).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+                    if item.observed { Text("自动观察：可查看状态与历史。尚未接管，不参与启停、重启或项目结束策略。").font(.caption).foregroundStyle(.secondary) }
                     Picker("详情",selection:$tab) { Text("配置").tag("details"); Text("日志").tag("logs"); Text("历史").tag("history"); Text("操作").tag("operations") }.pickerStyle(.segmented).labelsHidden()
                     ScrollView {
                         VStack(alignment:.leading,spacing:14) {
                             if tab == "details" {
                                 field("类型",item.typeName)
+                                field("管理能力",item.observed ? "自动观察 · 尚未接管" : "已接管")
+                                if item.observed { field("归属依据",item.spec["association"] as? String ?? "—") }
                                 field("工作目录",item.spec["cwd"] as? String ?? "—")
                                 field("运行对象",item.runtimeIdentity)
                                 field("端口",item.portSummary)
                                 field("启动命令",(item.spec["argv"] as? [String])?.joined(separator:" ") ?? item.spec["container_id"] as? String ?? item.spec["file"] as? String ?? "—")
                                 field("开始时间",dateLabel(item.run["started"]))
                                 field("运行 ID",item.run["id"] as? String ?? "—")
-                                Toggle("项目结束后持续运行",isOn:Binding(get:{ item.keep },set:{ store.perform(["action":"service_keep","id":item.id,"keep":$0]) })).disabled(store.busy)
+                                Toggle("项目结束后持续运行",isOn:Binding(get:{ item.keep },set:{ store.perform(["action":"service_keep","id":item.id,"keep":$0]) })).disabled(store.busy || item.observed)
                                 if let group = item.groupID {
                                     Divider(); Text("Compose 服务组").font(.headline)
                                     HStack {
                                         Button("停止整组") { store.perform(["action":"batch","group_id":group,"operation":"stop"]) }
                                         Button("重启整组") { store.perform(["action":"batch","group_id":group,"operation":"restart"]) }
-                                    }.disabled(store.busy)
+                                    }.disabled(store.busy || item.observed)
                                 }
                                 if let project = store.projects.first(where:{$0.id == item.projectID}) {
                                     Divider(); Text("项目结束策略 · " + project.name).font(.headline)
@@ -456,7 +464,7 @@ struct MainView: View {
                                     Button("刷新日志") { if let runID = store.logRunID { store.loadRunLogs(runID) } else { store.loadDetails() } }
                                     if store.logRunID != nil { Button("当前日志") { store.logRunID = nil; store.loadDetails() } }
                                 }
-                                Text(store.logs.isEmpty ? "尚无日志输出" : store.logs).font(.system(.caption,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)
+                                Text(store.logs.isEmpty ? (item.observed && item.kind != "container" ? "本机自动观察未接管原进程的输出，暂无采集日志。" : "尚无日志输出") : store.logs).font(.system(.caption,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)
                             } else if tab == "history" {
                                 Button("刷新历史") { store.loadDetails() }
                                 ForEach(Array(store.history.enumerated()),id:\.offset) { _, run in
@@ -703,6 +711,11 @@ struct SettingsView: View {
             Text("目标应用：" + (store.watcher["bundle_ids"] as? [String] ?? []).joined(separator:", ")).font(.caption.monospaced())
             if let error = store.watcher["error"] as? String, !error.isEmpty {Text(error).foregroundStyle(.orange)}
             Button("恢复退出观察器") {store.ensureWatcher();store.refresh()}
+            Divider()
+            Text("服务自动采集：" + (store.capture["alive"] as? Bool == true ? "运行中" : "未运行"))
+            Text("已记录 \(store.capture["event_count"] as? Int ?? 0) 次启动上下文。首次启用需安装并审核全局 hooks；采集组件运行不代表所有聊天已加载 hooks。").font(.caption).foregroundStyle(.secondary)
+            if let error = store.capture["error"] as? String, !error.isEmpty {Text(error).font(.caption).foregroundStyle(.orange)}
+            Button("启动或恢复自动采集") {store.perform(["action":"capture_start"])}.disabled(store.busy)
             Divider()
             Text("每次运行最多 3 MiB 滚动日志；历史默认保留。清理只删除已结束记录。").font(.caption).foregroundStyle(.secondary)
             HStack {TextField("保留天数",text:$days).frame(width:100);Button("清理旧历史") {if let number = Int(days), number > 0 {store.perform(["action":"cleanup","days":number])}}.disabled(store.busy)}

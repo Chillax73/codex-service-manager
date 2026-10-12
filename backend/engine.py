@@ -360,6 +360,18 @@ def container_inspect(cid):
     return json.loads(docker('inspect', cid, timeout=8))[0]
 
 
+def container_observation(*ids):
+    """Docker observation needs identities/status/ports, never Config.Env or health logs."""
+    template = '{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}},' \
+        '"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},' \
+        '"ExitCode":{{json .State.ExitCode}},"Health":{"Status":{{with (index .State "Health")}}{{json .Status}}{{else}}null{{end}}}},' \
+        '"NetworkSettings":{"Ports":{{json .NetworkSettings.Ports}}},"Config":{"Labels":{' \
+        '"com.docker.compose.project":{{json (index .Config.Labels "com.docker.compose.project")}},' \
+        '"com.docker.compose.service":{{json (index .Config.Labels "com.docker.compose.service")}},' \
+        '"com.docker.compose.project.config_files":{{json (index .Config.Labels "com.docker.compose.project.config_files")}}}}}'
+    return [json.loads(line) for line in docker('inspect', '--format', template, *ids, timeout=8).splitlines()]
+
+
 def compose_command(item, *args, merge_stderr=False):
     spec = item['spec']
     return docker('compose', '-p', spec['compose_project'], '-f', spec['file'], *args,
@@ -369,6 +381,8 @@ def compose_command(item, *args, merge_stderr=False):
 def containers_for(item):
     spec = item['spec']
     if item['kind'] == 'container':
+        if spec.get('management') == 'observed':
+            return container_observation(spec['container_id'])
         return [container_inspect(spec['container_id'])]
     ids = compose_command(item, 'ps', '-aq', spec['member']).splitlines()
     result = [container_inspect(cid) for cid in ids]
@@ -569,6 +583,8 @@ def operate(service_id, action, trigger='user'):
           [operation, service_id, action, trigger, timestamp()])
     try:
         item = service(service_id)
+        if item['spec'].get('management') == 'observed':
+            raise RuntimeError('自动观察服务尚未接管，不能执行启停或重启')
         run = latest(service_id)
         if action == 'restart':
             operate(service_id, 'stop', trigger)
@@ -597,12 +613,26 @@ def observe(service_id):
     run = latest(service_id)
     problem = None
     can_stop = False
+    observed = item['spec'].get('management') == 'observed'
     if item['kind'] in ('container', 'compose'):
         try:
             objects = containers_for(item)
             run = reconcile_docker(item, objects)
             state = 'running' if any(o['State']['Running'] for o in objects) else (run['state'] if run else 'stopped')
             can_stop = any(o['State']['Running'] for o in objects)
+        except Exception as exc:
+            state, problem = 'unknown', str(exc)
+    elif observed and run and run['ended'] is None:
+        runtime = run['runtime']
+        try:
+            current = identity(runtime.get('pid'))
+            if current and current['birth'] == runtime.get('birth'):
+                state = 'running'
+            else:
+                state = 'exited'
+                set_run(run['id'], ended=timestamp(), state=state,
+                        runtime={**runtime, 'exit_observation': '观察对象已退出或 PID 出生身份已变化；退出码未采集'})
+                run = latest(service_id)
         except Exception as exc:
             state, problem = 'unknown', str(exc)
     elif run and run['ended'] is None:
@@ -627,8 +657,9 @@ def observe(service_id):
     spec['url'] = url
     spec['env_keys'] = sorted(item['spec'].get('env', {}))
     return {**item, 'spec': spec, 'run': run, 'state': state, 'health': health_state,
-            'problem': problem or ((run or {}).get('error')), 'can_stop': can_stop,
-            'can_start': state not in ACTIVE, 'can_restart': state != 'unknown'}
+            'problem': problem or ((run or {}).get('error')), 'can_stop': can_stop and not observed,
+            'can_start': state not in ACTIVE and not observed, 'can_restart': state != 'unknown' and not observed,
+            'management': 'observed' if observed else 'managed', 'can_logs': not observed or item['kind'] in ('container', 'compose')}
 
 
 def project_record(project_id):
@@ -726,7 +757,8 @@ def restore_project(trash_id):
 
 
 def snapshot():
-    ids = [row['id'] for row in query('SELECT id FROM services ORDER BY name')]
+    ids = [row['id'] for row in query('SELECT id,spec FROM services ORDER BY name')
+           if json.loads(row['spec']).get('source') != 'internal']
     def observe_existing(sid):
         try:
             return observe(sid)
@@ -740,9 +772,16 @@ def snapshot():
     watcher = json.loads(watcher['value']) if watcher else None
     if watcher:
         watcher['alive'] = matches(watcher.get('pid'), watcher.get('birth'), '--watch') and timestamp() - watcher.get('updated', 0) < 20
-    return {'projects': query('SELECT * FROM projects ORDER BY name'), 'services': services,
+    capture = query('SELECT value FROM metadata WHERE key=?', ['capture'], True)
+    capture = json.loads(capture['value']) if capture else None
+    if capture:
+        capture['alive'] = matches(capture.get('pid'), capture.get('birth'), 'capture.py') and timestamp() - capture.get('updated', 0) < 20
+    projects = [p for p in query('SELECT * FROM projects ORDER BY name')
+                if not query('SELECT id FROM services WHERE project_id=?', [p['id']]) or
+                any(json.loads(s['spec']).get('source') != 'internal' for s in query('SELECT spec FROM services WHERE project_id=?', [p['id']]))]
+    return {'projects': projects, 'services': services,
             'operations': query('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
-            'watcher': watcher, 'deleted_projects': deleted_projects(), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
+            'watcher': watcher, 'capture': capture, 'deleted_projects': deleted_projects(), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
 
 
 def batch(req, trigger='user'):
@@ -754,6 +793,11 @@ def batch(req, trigger='user'):
     results = []
     for sid in sorted(ids):
         try:
+            registered = query('SELECT spec FROM services WHERE id=?', [sid], True)
+            spec = json.loads(registered['spec']) if registered else {}
+            if spec.get('management') == 'observed' or spec.get('source') == 'internal':
+                results.append({'id': sid, 'result': 'skipped', 'reason': '自动观察服务或内部采集组件不参与批量控制'})
+                continue
             if trigger in ('manual', 'codex_exit') and service(sid)['keep']:
                 results.append({'id': sid, 'result': 'skipped', 'reason': '持续运行例外'})
                 continue
@@ -836,6 +880,10 @@ def dispatch(req):
             return log.read().decode(errors='replace')
     if action == 'discover':
         return discover()
+    if action == 'capture_start':
+        import capture
+        capture.ensure_collector()
+        return True
     if action == 'project_delete_preview':
         return project_delete_preview(req['id'])
     with mutation_lock():

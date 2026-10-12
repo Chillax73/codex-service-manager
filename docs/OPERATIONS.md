@@ -17,6 +17,8 @@
 
 ## 排障
 
+全局自动观察先运行 `scripts/check_capture_hooks.py` 核对两个 User config handler 的 trusted/enabled，再新建聊天验证实际启动。组件不可用时在管理设置点击“启动或恢复自动采集”。仅组件运行不代表既有聊天已重新加载 hooks。若自动审批拒绝新增的采集副作用，保留拒绝原因并正常取得明确授权，不通过移除前缀或绕过信任继续。
+
 | 现象 | 检查和处理 |
 |---|---|
 | 缺少 Swift/Python 或构建失败 | 执行 `xcode-select --install`，确认 `/usr/bin/python3 --version` 和 `swiftc --version`；运行 `scripts/doctor.py`。 |
@@ -29,7 +31,19 @@
 | 找不到之前记录 | 核对 CSM_STATE_DIR/`--root`；GUI、CLI 和观察器应使用同一目录。 |
 | 首次 Maven/Node 测试失败 | 先运行 `scripts/prepare_fixtures.py`，检查网络和工具版本；Maven 初次运行仍可能下载插件依赖。 |
 
+## 另一个聊天或窗口启动服务却没有记录
+
+1. 核对实际状态。检查目标端口、PID/出生身份或指定容器状态；完成回复或旧 PID 文件不能证明服务仍在运行。已退出对象不能补录为运行中，也不要先重启来制造登记证据。
+2. 在目标项目目录运行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/check_capture_hooks.py /项目目录`，确认两个 User config handler 为 trusted/enabled。这个独立配置探测不会重载桌面或证明旧聊天接入。未信任或定义变化时，在正常 `/hooks` 中逐项审核。
+3. 查看“管理设置 → 服务自动采集”的心跳与错误，必要时使用恢复入口。组件正常但无新事件，继续检查该聊天是否在安装前已打开、工具是否经过 shell hooks；新窗口复用旧聊天仍可能漏记。
+4. 当前使用新聊天验证常见路径，或让后续需完整控制的服务通过 scripts/csm 登记。已经运行的进程不要重复启动；已有容器在身份和项目明确时用 `csm container` 登记，已有 Compose 要使用原项目名，不能创建副本。
+5. 首阶段没有无 hook 的后台自动登记兜底，也没有已验收的旧聊天配置热加载操作。复杂包装、脚本内部 Docker 和采样前完全脱离的进程可能漏记；原生发现列表的候选不能等同自动观察或接管。
+
+不要将退出/重启 Codex 作为无副作用的配置刷新：真正退出可能触发已管理项目的退出策略。自动观察不改变业务进程的存活方式，也不负责补回日志、退出码或启动配置。旧聊天加载、后台兜底与复杂脚本控制分别见 T16–T18，不通过修改信任状态文件或放宽审批实现。
+
 ## 卸载与数据清理
+
+曾启用全局自动观察时，先在 `/hooks` 逐项禁用本工具两个 User config handler，执行 `/usr/bin/python3 scripts/install_global_capture.py --remove --instructions`，确认加载过旧配置的聊天不再执行本工具回调，并通过 `scripts/csm stop csm-auto-collector` 停止本工具的内部采集任务。不要停止仅观察的业务进程。此后再按下面步骤处理配套入口、观察器和数据。
 
 1. 在 UI/CLI 中逐项停止自己希望结束的服务；持续运行的服务和保留例外需明确决定。`end <projectID>`遵循项目开关，不保证停掉保留例外。不要用旧 PID 直接 kill。
 2. 在每个接入项目执行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/integrate.py /path/to/project --remove`。它只移除标记段落，保留其他指令；检查首次备份 AGENTS.md.csm-backup。原型 hooks 如曾安装，检查项目 .codex/hooks.json，将指向 validation/hook_recorder.py 的本工具条目逐项移除，保留其他 hooks；勿删除整个混合配置。
