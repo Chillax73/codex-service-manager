@@ -105,7 +105,7 @@ final class ExitWatcher {
     }
 }
 
-struct ProjectItem: Identifiable {
+struct ProjectItem: Identifiable, Equatable {
     let id: String, name: String, cwd: String
     let manual: Bool, codexExit: Bool
     init(_ data: [String: Any]) {
@@ -113,6 +113,14 @@ struct ProjectItem: Identifiable {
         cwd = data["cwd"] as? String ?? ""
         manual = (data["manual"] as? NSNumber)?.boolValue ?? true
         codexExit = (data["codex_exit"] as? NSNumber)?.boolValue ?? false
+    }
+}
+struct DeletedProjectItem: Identifiable {
+    let id: String, name: String, cwd: String
+    let deletedAt: Double
+    init(_ data: [String: Any]) {
+        id = data["id"] as? String ?? ""; name = data["name"] as? String ?? ""; cwd = data["cwd"] as? String ?? ""
+        deletedAt = data["deleted_at"] as? Double ?? 0
     }
 }
 struct ServiceItem: Identifiable {
@@ -166,6 +174,8 @@ func dateLabel(_ number: Any?) -> String {
 
 final class Store: ObservableObject {
     @Published var projects: [ProjectItem] = []
+    @Published var deletedProjects: [DeletedProjectItem] = []
+    @Published var recentlyDeletedProject: String?
     @Published var services: [ServiceItem] = []
     @Published var operations: [[String: Any]] = []
     @Published var selectedProject = "all"
@@ -183,6 +193,7 @@ final class Store: ObservableObject {
     @Published var discovery: [String: Any] = [:]
     var timer: Timer?
     var onRefresh: (() -> Void)?
+    var revision = 0
     var runningCount: Int { services.filter { $0.canStop }.count }
     var filtered: [ServiceItem] {
         services.filter { item in
@@ -209,15 +220,24 @@ final class Store: ObservableObject {
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
+        let requestRevision = revision
         DispatchQueue.global(qos: .utility).async {
             do {
                 let data = try rpc(["action": "snapshot"]) as? [String: Any] ?? [:]
                 DispatchQueue.main.async {
+                    guard requestRevision == self.revision else { self.refreshing = false; self.refresh(); return }
                     let previousRun = self.selected?.run
-                    self.projects = (data["projects"] as? [[String: Any]] ?? []).map(ProjectItem.init)
+                    let projects = (data["projects"] as? [[String: Any]] ?? []).map(ProjectItem.init)
+                    if projects != self.projects { self.projects = projects }
+                    self.deletedProjects = (data["deleted_projects"] as? [[String: Any]] ?? []).map(DeletedProjectItem.init)
+                    if let id = self.recentlyDeletedProject, !self.deletedProjects.contains(where: { $0.id == id }) { self.recentlyDeletedProject = nil }
                     self.services = (data["services"] as? [[String: Any]] ?? []).map { ServiceItem(raw: $0) }
                     self.operations = data["operations"] as? [[String: Any]] ?? []
                     self.watcher = data["watcher"] as? [String: Any] ?? [:]
+                    if self.selectedProject != "all", !self.projects.contains(where: { $0.id == self.selectedProject }) { self.selectedProject = "all" }
+                    if let id = self.selectedService, !self.services.contains(where: { $0.id == id }) {
+                        self.selectedService = nil; self.logs = ""; self.history = []; self.logRunID = nil
+                    }
                     self.refreshing = false; self.onRefresh?()
                     if let currentRun = self.selected?.run,
                        (previousRun?["id"] as? String != currentRun["id"] as? String ||
@@ -229,14 +249,14 @@ final class Store: ObservableObject {
             } catch { DispatchQueue.main.async { self.error = error.localizedDescription; self.refreshing = false } }
         }
     }
-    func perform(_ request: [String: Any], completion: ((Any) -> Void)? = nil) {
+    func perform(_ request: [String: Any], failure: ((String) -> Void)? = nil, completion: ((Any) -> Void)? = nil) {
         guard !busy else { return }
         busy = true; notice = "正在执行…"
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let result = try rpc(request)
                 DispatchQueue.main.async {
-                    self.busy = false
+                    self.busy = false; self.revision += 1
                     if let results = (result as? [[String: Any]]) ?? ((result as? [String: Any])?["results"] as? [[String: Any]]), results.contains(where: { $0["result"] as? String == "failed" }) {
                         self.notice = "部分操作失败，请查看操作记录"
                         self.error = results.filter { $0["result"] as? String == "failed" }.map { $0["error"] as? String ?? "失败" }.joined(separator: "\n")
@@ -245,9 +265,16 @@ final class Store: ObservableObject {
                     if self.selected != nil { self.loadDetails() }
                 }
             } catch {
-                DispatchQueue.main.async { self.busy = false; self.notice = "操作失败"; self.error = error.localizedDescription; self.refresh() }
+                DispatchQueue.main.async { self.busy = false; self.notice = "操作失败"; if let failure = failure { failure(error.localizedDescription) } else { self.error = error.localizedDescription }; self.refresh() }
             }
         }
+    }
+    func restoreProject(_ id: String) {
+        perform(["action":"project_restore","id":id],completion:{ result in
+            if let data = result as? [String:Any], let project = data["project"] as? [String:Any], let projectID = project["id"] as? String {
+                self.selectedProject = projectID; self.recentlyDeletedProject = nil; self.notice = "项目登记和历史已恢复，未启动服务"
+            }
+        })
     }
     func action(_ action: String, _ item: ServiceItem) { perform(["action": action, "id": item.id]) }
     func loadDetails() {
@@ -277,6 +304,23 @@ final class Store: ObservableObject {
     }
 }
 
+struct ProjectRow: View, Equatable {
+    let project: ProjectItem
+    let busy: Bool
+    let onRename: () -> Void
+    let onDelete: () -> Void
+    static func == (lhs: ProjectRow, rhs: ProjectRow) -> Bool { lhs.project == rhs.project && lhs.busy == rhs.busy }
+    var body: some View {
+        VStack(alignment:.leading,spacing:4) {
+            Text(project.name).font(.headline)
+            Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        }.padding(.vertical,4).contextMenu {
+            Button(action:onRename) { Label("重命名项目…",systemImage:"pencil") }.disabled(busy)
+            Button(role:.destructive,action:onDelete) { Label("删除项目…",systemImage:"trash") }.disabled(busy)
+        }
+    }
+}
+
 struct MainView: View {
     @ObservedObject var store: Store
     @State private var adding = false
@@ -284,16 +328,17 @@ struct MainView: View {
     @State private var settings = false
     @State private var tab = "details"
     @State private var forceItem: ServiceItem?
+    @State private var renamingProject: ProjectItem?
+    @State private var deletingProject: ProjectItem?
     var body: some View {
         NavigationSplitView {
             List(selection: $store.selectedProject) {
                 Label("全部项目", systemImage:"square.grid.2x2").tag("all")
                 Section("项目") {
                     ForEach(store.projects) { project in
-                        VStack(alignment:.leading, spacing:4) {
-                            Text(project.name).font(.headline)
-                            Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }.padding(.vertical,4).tag(project.id)
+                        ProjectRow(project:project,busy:store.busy,
+                            onRename:{ renamingProject = project },onDelete:{ deletingProject = project })
+                            .equatable().tag(project.id)
                     }
                 }
             }.navigationTitle("项目").navigationSplitViewColumnWidth(min:210, ideal:240)
@@ -307,10 +352,12 @@ struct MainView: View {
                     Spacer()
                     Button { adding = true } label: { Image(systemName:"plus") }.help("添加服务")
                     Menu {
-                        Button("发现本机服务") { store.perform(["action":"discover"]) { store.discovery = $0 as? [String:Any] ?? [:]; discovering = true } }
+                        Button("发现本机服务") { store.perform(["action":"discover"],completion:{ store.discovery = $0 as? [String:Any] ?? [:]; discovering = true }) }
                         Button("刷新") { store.refresh() }
                         Button("管理设置") { settings = true }
                         if let project = store.currentProject {
+                            Divider()
+                            projectActions(project)
                             Divider()
                             Button("结束工作") { store.perform(["action":"end_project", "project_id":project.id]) }
                             Button("停止项目全部服务") { store.perform(["action":"batch", "project_id":project.id, "operation":"stop"]) }
@@ -355,6 +402,7 @@ struct MainView: View {
                     if store.busy { ProgressView().controlSize(.small) }
                     Text(store.notice.isEmpty ? (store.refreshing ? "正在更新状态…" : "每 2 秒核对状态") : store.notice)
                     Spacer()
+                    if let id = store.recentlyDeletedProject { Button("撤销删除") { store.restoreProject(id) }.disabled(store.busy) }
                     Image(systemName:store.watcher["alive"] as? Bool == true ? "eye" : "eye.slash")
                         .help(store.watcher["alive"] as? Bool == true ? "退出观察器运行中" : "退出观察器不可用")
                 }.font(.caption).foregroundStyle(.secondary).padding(12)
@@ -444,6 +492,8 @@ struct MainView: View {
         .onChange(of:store.selectedProject) { scope in
             if scope != "all", store.selected?.projectID != scope { store.selectedService = nil }
         }
+        .sheet(item:$renamingProject) { RenameProjectView(project:$0,store:store) }
+        .sheet(item:$deletingProject) { DeleteProjectView(project:$0,store:store) }
         .sheet(isPresented:$adding) { AddView(store:store) }
         .sheet(isPresented:$discovering) { DiscoveryView(store:store) }
         .sheet(isPresented:$settings) { SettingsView(store:store) }
@@ -453,8 +503,111 @@ struct MainView: View {
             Button("取消",role:.cancel) {forceItem = nil}
         }
     }
+    @ViewBuilder func projectActions(_ project: ProjectItem) -> some View {
+        Button { renamingProject = project } label: { Label("重命名项目…", systemImage:"pencil") }.disabled(store.busy)
+        Button(role:.destructive) { deletingProject = project } label: { Label("删除项目…", systemImage:"trash") }.disabled(store.busy)
+    }
     func field(_ label:String,_ value:String) -> some View {
         VStack(alignment:.leading,spacing:5) { Text(label).font(.caption).foregroundStyle(.secondary); Text(value).font(.system(.body,design:.monospaced)).textSelection(.enabled) }
+    }
+}
+
+struct RenameProjectView: View {
+    let project: ProjectItem
+    @ObservedObject var store: Store
+    @Environment(\.dismiss) var dismiss
+    @State private var name: String
+    @State private var failure = ""
+    init(project: ProjectItem, store: Store) {
+        self.project = project; self.store = store; _name = State(initialValue:project.name)
+    }
+    var cleanName: String { name.trimmingCharacters(in:.whitespacesAndNewlines) }
+    var validName: Bool {
+        !cleanName.isEmpty && cleanName.unicodeScalars.count <= 100 &&
+        !cleanName.unicodeScalars.contains { CharacterSet.controlCharacters.union(.newlines).contains($0) }
+    }
+    var body: some View {
+        VStack(alignment:.leading,spacing:16) {
+            Text("重命名项目").font(.title2.weight(.semibold))
+            Text(project.cwd).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+            TextField("项目名称",text:$name).textFieldStyle(.roundedBorder).accessibilityIdentifier("project-name-input").onSubmit(save)
+            Text("名称为 1–100 个字符。只修改显示名称，目录、服务归属和结束策略保持不变。").font(.caption).foregroundStyle(.secondary)
+            if !failure.isEmpty { Text(failure).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
+                Button("保存名称",action:save).keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(!validName || store.busy)
+            }
+        }.padding(24).frame(width:500)
+    }
+    func save() {
+        guard validName, !store.busy else { return }
+        failure = ""
+        store.perform(["action":"project_rename","id":project.id,"name":cleanName],failure:{ failure = $0 },completion:{ _ in dismiss() })
+    }
+}
+
+struct DeleteProjectView: View {
+    let project: ProjectItem
+    @ObservedObject var store: Store
+    @Environment(\.dismiss) var dismiss
+    @State private var preview: [String: Any]?
+    @State private var loading = true
+    @State private var failure = ""
+    var blockers: [[String: Any]] { preview?["blockers"] as? [[String: Any]] ?? [] }
+    var body: some View {
+        VStack(alignment:.leading,spacing:16) {
+            Text("删除项目登记").font(.title2.weight(.semibold))
+            Text(project.name).font(.headline)
+            Text(project.cwd).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+            Text("项目、服务登记及运行历史将移出当前列表，之后可撤销或在管理设置中恢复。源码目录、容器、数据卷和本机日志文件保留。").font(.callout)
+            if loading { ProgressView("正在核对服务状态…") }
+            if let data = preview {
+                Text("将移除 \(data["service_count"] as? Int ?? 0) 个服务登记、\(data["run_count"] as? Int ?? 0) 条运行历史和 \(data["operation_count"] as? Int ?? 0) 条操作记录。").font(.caption).foregroundStyle(.secondary)
+                if !blockers.isEmpty {
+                    Text("有服务尚未安全结束，当前不能删除").font(.headline).foregroundStyle(.orange)
+                    ScrollView {
+                        VStack(alignment:.leading,spacing:10) {
+                            ForEach(Array(blockers.enumerated()),id:\.offset) { _, item in
+                                VStack(alignment:.leading,spacing:3) {
+                                    Text(item["name"] as? String ?? "服务").font(.subheadline.weight(.semibold))
+                                    Text(item["reason"] as? String ?? stateLabel(item["state"] as? String ?? "unknown")).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }.frame(maxWidth:.infinity,alignment:.leading)
+                    }.frame(maxHeight:180)
+                    Text("请先手动停止运行中的服务，或处理身份未知/停止失败的问题，再重新检查。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if !failure.isEmpty { Text(failure).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("重新检查",action:reload).disabled(loading || store.busy)
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
+                Button("删除项目",role:.destructive,action:remove).buttonStyle(.borderedProminent)
+                    .disabled(loading || store.busy || preview?["can_delete"] as? Bool != true)
+            }
+        }.padding(24).frame(width:590).onAppear(perform:reload)
+    }
+    func reload() {
+        loading = true; failure = ""; preview = nil
+        DispatchQueue.global(qos:.utility).async {
+            do {
+                let data = try rpc(["action":"project_delete_preview","id":project.id]) as? [String: Any]
+                DispatchQueue.main.async { preview = data; loading = false }
+            } catch { DispatchQueue.main.async { failure = error.localizedDescription; loading = false } }
+        }
+    }
+    func remove() {
+        guard preview?["can_delete"] as? Bool == true, !store.busy else { return }
+        store.perform(["action":"project_delete","id":project.id],failure:{ failure = $0; preview = nil },completion:{ result in
+            if let data = result as? [String:Any] { store.recentlyDeletedProject = data["trash_id"] as? String; store.notice = "项目已移除，可撤销删除或稍后恢复" }
+            if store.selectedProject == project.id { store.selectedProject = "all" }
+            if store.selected?.projectID == project.id {
+                store.selectedService = nil; store.logs = ""; store.history = []; store.logRunID = nil
+            }
+            dismiss()
+        })
     }
 }
 
@@ -505,7 +658,7 @@ struct AddView: View {
                 if let number = Int(port) {req["ports"] = [number]}
                 if kind == "container" {req["action"] = "register_container";req["container_id"] = container}
                 if kind == "compose" {req["action"] = "register_compose";req["file"] = file; if !composeProject.isEmpty {req["compose_project"] = composeProject}}
-                store.perform(req) {_ in dismiss()}
+                store.perform(req,completion:{_ in dismiss()})
             }.buttonStyle(.borderedProminent).disabled(store.busy || (kind != "compose" && name.isEmpty)) }
         }.padding(26).frame(width:590)
     }
@@ -523,7 +676,7 @@ struct DiscoveryView: View {
                         HStack { Text(item["name"] as? String ?? ""); Spacer(); Text(item["state"] as? String ?? "").foregroundStyle(.secondary)
                             Button("接管到当前项目") {
                                 guard let project = store.currentProject else {return}
-                                store.perform(["action":"register_container","container_id":item["id"] ?? "","cwd":project.cwd]) {_ in dismiss()}
+                                store.perform(["action":"register_container","container_id":item["id"] ?? "","cwd":project.cwd],completion:{_ in dismiss()})
                             }.disabled(store.currentProject == nil || store.busy)
                         }
                     }
@@ -553,6 +706,25 @@ struct SettingsView: View {
             Divider()
             Text("每次运行最多 3 MiB 滚动日志；历史默认保留。清理只删除已结束记录。").font(.caption).foregroundStyle(.secondary)
             HStack {TextField("保留天数",text:$days).frame(width:100);Button("清理旧历史") {if let number = Int(days), number > 0 {store.perform(["action":"cleanup","days":number])}}.disabled(store.busy)}
+            if !store.deletedProjects.isEmpty {
+                Divider()
+                Text("已删除项目 · 可恢复").font(.headline)
+                ScrollView {
+                    VStack(alignment:.leading,spacing:12) {
+                        ForEach(store.deletedProjects) { project in
+                            HStack {
+                                VStack(alignment:.leading,spacing:3) {
+                                    Text(project.name).font(.subheadline.weight(.semibold))
+                                    Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                }
+                                Spacer()
+                                Button("恢复项目") { store.restoreProject(project.id) }.disabled(store.busy)
+                            }
+                        }
+                    }
+                }.frame(maxHeight:140)
+                Text("恢复登记和历史，不启动服务；同目录已有项目时会拒绝覆盖。").font(.caption).foregroundStyle(.secondary)
+            }
             Button("打开数据目录") {NSWorkspace.shared.open(URL(fileURLWithPath:statePath))}
             Text("关闭主窗口继续管理。退出本应用保留服务，退出观察器继续运行。系统关机时不保证停止完成。").font(.caption).foregroundStyle(.secondary)
             HStack {Spacer();Button("完成") {dismiss()}}
@@ -600,6 +772,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let quit = NSMenuItem(title:"退出 Codex Service Manager（保留服务）",action:#selector(quitApp),keyEquivalent:"q")
         quit.target = self; applicationMenu.addItem(quit)
         applicationItem.submenu = applicationMenu; main.addItem(applicationItem)
+        let editItem = NSMenuItem(title:"编辑",action:nil,keyEquivalent:"")
+        let editMenu = NSMenu(title:"编辑")
+        for (title,selector,key) in [("撤销","undo:","z"),("重做","redo:","Z"),
+                                    ("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {
+            let item = NSMenuItem(title:title,action:Selector(selector),keyEquivalent:key)
+            if selector == "redo:" { item.keyEquivalentModifierMask = [.command,.shift] }
+            editMenu.addItem(item)
+            if selector == "redo:" { editMenu.addItem(.separator()) }
+        }
+        editItem.submenu = editMenu; main.addItem(editItem)
         let windowItem = NSMenuItem(title:"窗口",action:nil,keyEquivalent:"")
         let windowMenu = NSMenu(title:"窗口")
         let close = NSMenuItem(title:"关闭窗口",action:#selector(closeWindow),keyEquivalent:"w")

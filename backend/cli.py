@@ -55,6 +55,14 @@ def main():
     policy.add_argument('project_id')
     policy.add_argument('--manual', choices=['on', 'off'], required=True)
     policy.add_argument('--codex-exit', choices=['on', 'off'], required=True)
+    rename = sub.add_parser('rename-project', help='修改项目显示名称')
+    rename.add_argument('project_id')
+    rename.add_argument('name')
+    remove = sub.add_parser('delete-project', help='仅删除已无活动/未知服务的项目登记')
+    remove.add_argument('project_id')
+    remove.add_argument('--confirm', action='store_true', required=True, help='确认删除登记和历史记录')
+    restore = sub.add_parser('restore-project', help='恢复已移除项目的登记与历史，不启动服务')
+    restore.add_argument('trash_id')
     finish = sub.add_parser('end')
     finish.add_argument('project_id')
     args = parser.parse_args()
@@ -77,6 +85,13 @@ def main():
         req['action'] = 'snapshot'
     elif args.action == 'policy':
         req.update(action='project_policy', id=args.project_id, manual=args.manual == 'on', codex_exit=args.codex_exit == 'on')
+    elif args.action == 'rename-project':
+        req.update(action='project_rename', id=args.project_id)
+    elif args.action == 'delete-project':
+        req.update(action='project_delete', id=args.project_id)
+        req.pop('confirm', None)
+    elif args.action == 'restore-project':
+        req.update(action='project_restore', id=args.trash_id)
     elif args.action == 'end':
         req['action'] = 'end_project'
     try:

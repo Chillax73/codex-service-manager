@@ -49,3 +49,9 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 ## Hooks 文档补充
 
 在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。只改说明，不修改正式登记/退出链或自动安装、信任 hooks。
+
+## 项目管理实现
+
+使用现有 projects.name，无 schema 迁移。新增 project_rename、project_delete_preview、project_delete RPC；变更持有全局 mutation_lock，删除重新 observe 归属服务并在单个 SQLite 事务归档至 metadata 回收记录后移出关联表，不执行信号、Docker rm 或磁盘项目清理。只读快照容忍并发删除的服务行消失。CLI 增加 rename-project/delete-project（显式确认）便于诊断。SwiftUI 项目菜单打开改名/删除 sheet；删除 sheet 展示范围、数量、阻碍和重新检查，最终请求仍以后端为准。Store 在刷新后校正选择，并丢弃变更前已发出的旧快照。
+
+复用 metadata 的 deleted_project:UUID 命名空间，无 schema 迁移；快照仅暴露名称/目录/时间/数量摘要。恢复校验目录和标识冲突并事务回填，随后移除归档。界面提供撤销删除和设置中的恢复列表。项目行使用 Equatable 避免刷新使上下文菜单收起，补齐标准编辑菜单。
