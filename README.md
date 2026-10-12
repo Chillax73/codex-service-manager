@@ -2,7 +2,7 @@
 
 一个供个人开发使用的原生 macOS 服务管理应用。本项目是独立第三方工具，与 OpenAI 没有官方关联。按项目查看 Codex 配套入口启动的本机服务、后台任务、Docker 容器和 Compose 服务，并管理启停、日志与运行历史。
 
-当前版本已完成本机 A-01 至 A-16 验收，包含真实 Codex 退出检测。实测环境为 Apple Silicon / macOS 15.7.3；构建目标 macOS 13+，Intel 与其他系统版本未实测。
+当前版本已完成本机 A-01 至 A-16 验收，包含真实 Codex 退出检测。真实桌面实测环境为 Apple Silicon / macOS 15.7.3；构建目标 macOS 13+。macOS 14/15 的构建与引擎回归已通过 GitHub CI；Intel 和其他系统版本的窗口/Codex 退出流程尚未人工验收。
 
 ![真实原生窗口：仅临时测试项目和服务](docs/images/app-preview.png)
 

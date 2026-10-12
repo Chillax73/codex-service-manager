@@ -34,6 +34,8 @@ T10：A-01 至 A-16 证据映射见 acceptance.md；ui-cleanup.json 保存归档
 - [x] O04 基础 CI 与独立 Docker 工作流实际执行。
 - [x] O05 README、真实脱敏截图、卸载与排障。
 - [x] O06 CONTRIBUTING/SECURITY 与 Issue/PR 模板。
-- [ ] O07 CHANGELOG、v0.1.0 源码开发者预览。
+- [x] O07 CHANGELOG、v0.1.0 源码开发者预览。
 
 O02–O06 证据：[开源核验](../../docs/results/OPEN_SOURCE_READINESS.md)、依赖清单、真实测试截图；GitHub macOS CI 与独立 Docker 集成都已实际通过。
+
+O07：[v0.1.0 开发者预览](https://github.com/Chillax73/codex-service-manager/releases/tag/v0.1.0) 已发布，标签 6a52478、CI run 38224570507 通过；首版仅源码，不附未公证应用。

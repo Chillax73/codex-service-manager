@@ -13,6 +13,8 @@
 | 使用/协作 | 上手、卸载、排障、CONTRIBUTING、SECURITY、Issue/PR 模板已补齐；GitHub 私密漏洞报告已启用。 |
 | 基础 CI | macOS 14/15 构建、签名、Python 回归/隐私与 npm 审核通过：[Actions](https://github.com/Chillax73/codex-service-manager/actions/runs/38224121884)。 |
 | Docker CI | 独立 Linux runner 的 Docker/Compose 与真实失败场景通过：[Actions](https://github.com/Chillax73/codex-service-manager/actions/runs/38224127094)。 |
-| 首版发布 | CHANGELOG 已准备，CI/集成通过；v0.1.0 以该验证版本的源码和本文档核验结果发布。 |
+| 首版发布 | [v0.1.0 源码开发者预览](https://github.com/Chillax73/codex-service-manager/releases/tag/v0.1.0) 已发布；标签指向 `6a52478`，该提交 [CI 已通过](https://github.com/Chillax73/codex-service-manager/actions/runs/38224570507)。无应用二进制附件。 |
 
 原有 A-01 至 A-16 是先前 Mac 的本机验收，见 [报告](VALIDATION.md)。此次没有改变产品服务模型或原生界面代码；CI 不声称拥有真实桌面或 Codex 退出证据。源码预览不包含 `.app`、Python 运行时、第三方依赖或用户状态。
+
+发布后 main 的收尾改动仅记录完成状态和澄清平台验证范围，不改变 v0.1.0 的产品/测试代码。

@@ -34,3 +34,5 @@
 O02：核对直接依赖官方 LICENSE、锁文件间接依赖和源码/图片来源，记录范围而非假称第三方审计。O03：在不包含 ignored 工作目录的新源码副本运行基础测试；安装依赖后使用 PATH 运行真实项目、停止并核对测试资源。O04：记录 GitHub CI 和手动 Docker workflow 链接及实际结果。O05：仅测试数据的真实窗口截图、逐条检查 README 命令与文档链接。O06：安全入口存在且禁止上传私密数据。O07：GitHub 预览 release 的 tag/commit 与验证通过的源码一致，不附未公证应用。
 
 O02–O06 本机与远端检查通过，逐项证据见 [开源核验](../../docs/results/OPEN_SOURCE_READINESS.md)。仓库在发布准备期间由用户改名为 codex-service-manager，仓库 ID 与独立脱敏公开快照一致；所有对外地址已同步。
+
+O07：v0.1.0 已发布为 prerelease，注解标签指向通过 CI 的 6a52478，tagger 使用 noreply，未包含应用附件；见发布页与开源核验。
