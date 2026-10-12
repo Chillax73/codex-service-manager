@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Fail closed on private artifacts and recognizable secrets in the Git index."""
+import hashlib
 import re
 import subprocess
 import sys
+
+APPROVED_IMAGES = {'docs/images/app-preview.png': 'f4e1ddefea7ffa62320ab2576334b8cea5f283d7f820a9198138fd1980a45139'}
 
 PATTERNS = {
     'home directory': re.compile(rb'/Users/[A-Za-z0-9][^\s\"\x27]*|/home/[A-Za-z0-9][^\s\"\x27]*'),
@@ -24,6 +27,11 @@ def check():
         mode, sha, stage = info.split()
         path = path_bytes.decode('utf-8')
         count += 1
+        if path in APPROVED_IMAGES and stage == b'0' and mode == b'100644':
+            data = subprocess.check_output(['git', 'cat-file', 'blob', sha.decode()])
+            if hashlib.sha256(data).hexdigest() != APPROVED_IMAGES[path]:
+                failures.append((path, 'image requires fresh manual privacy review'))
+            continue
         if (stage != b'0' or mode not in (b'100644', b'100755') or
             path.startswith(('docs/evidence/', '.codex/', '.test-state/', 'build/')) or
             path == 'AGENTS.md' or path == 'validation/hooks.json' or

@@ -2,6 +2,8 @@
 import json,subprocess,sys,time
 from pathlib import Path
 BASE=Path(__file__).resolve().parents[1]
+from support import prepare_workspace
+prepare_workspace()
 sys.path.insert(0,str(BASE/'backend'))
 import engine
 m=json.loads((BASE/'docs/evidence/ui-fixtures.json').read_text())

@@ -8,8 +8,11 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 BASE = Path(__file__).resolve().parents[1]
+from support import prepare_workspace, tool, stop_test_watcher
+prepare_workspace()
 sys.path.insert(0,str(BASE / 'backend'))
 import engine
 
@@ -17,8 +20,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--root',type=Path)
 parser.add_argument('--keep',action='store_true')
 args = parser.parse_args()
-if args.root:
-    engine.ROOT = args.root.resolve()
+engine.ROOT = (args.root or BASE / '.test-state' / ('projects-' + uuid.uuid4().hex[:10])).resolve()
 checks=[]
 owned=[]
 
@@ -42,7 +44,7 @@ def cli(cwd,*args):
     return result['result']
 
 
-def wait(sid,timeout=90):
+def wait(sid,timeout=180):
     until=time.time()+timeout
     while time.time()<until:
         item=engine.observe(sid)
@@ -54,9 +56,9 @@ def wait(sid,timeout=90):
 
 try:
     for name,relative,argv,extra,path,expected in [
-        ('Vite 前端','frontend',['/opt/homebrew/bin/npm','run','dev','--','--port','{port}'],{'VITE_CSM_LABEL':'persisted'},'/',b'CSM'),
-        ('Spring 后端','spring',['/Applications/IntelliJ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn','-o','spring-boot:run','-Dspring-boot.run.arguments=--server.address=127.0.0.1 --server.port={port}'],{'CSM_LABEL':'persisted'},'/health',b'spring:persisted'),
-        ('Python 后端','python',['/usr/bin/python3','-m','server'],{'CSM_LABEL':'persisted'},'/',b'persisted')]:
+        ('Vite 前端','frontend',[tool('npm', 'CSM_NPM'),'run','dev','--','--port','{port}'],{'VITE_CSM_LABEL':'persisted'},'/',b'CSM'),
+        ('Spring 后端','spring',[tool('mvn', 'CSM_MAVEN'),'-B','-ntp','spring-boot:run','-Dspring-boot.run.arguments=--server.address=127.0.0.1 --server.port={port}'],{'CSM_LABEL':'persisted'},'/health',b'spring:persisted'),
+        ('Python 后端','python',[sys.executable,'-m','server'],{'CSM_LABEL':'persisted'},'/',b'persisted')]:
         number=port();cwd=BASE / 'tests/fixtures' / relative
         argv=[arg.replace('{port}',str(number)) for arg in argv]
         env={**extra,'CSM_PORT':str(number)}
@@ -83,6 +85,9 @@ finally:
         for sid in owned:
             try:engine.dispatch({'action':'force','id':sid})
             except Exception as exc:check('清理 '+sid,False,{'error':str(exc)})
+    if not args.keep and not args.root:
+        try:stop_test_watcher(engine.ROOT)
+        except Exception as exc:check('测试观察器清理',False,{'error':str(exc)})
     (BASE / 'docs/evidence/project-tests.json').write_text(json.dumps({'generated_at':time.time(),'state_root':str(engine.ROOT),
         'checks':checks,'owned_service_ids':owned,'kept_for_ui':args.keep,'entry':'scripts/csm from actual desktop execution tool'},ensure_ascii=False,indent=2)+'\n')
 sys.exit(0 if checks and all(c['passed'] for c in checks) else 1)

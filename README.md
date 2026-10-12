@@ -1,8 +1,12 @@
 # Codex Service Manager
 
-一个供个人开发使用的原生 macOS 服务管理应用。按项目查看 Codex 配套入口启动的本机服务、后台任务、Docker 容器和 Compose 服务，并管理启停、日志与运行历史。
+一个供个人开发使用的原生 macOS 服务管理应用。本项目是独立第三方工具，与 OpenAI 没有官方关联。按项目查看 Codex 配套入口启动的本机服务、后台任务、Docker 容器和 Compose 服务，并管理启停、日志与运行历史。
 
 当前版本已完成本机 A-01 至 A-16 验收，包含真实 Codex 退出检测。实测环境为 Apple Silicon / macOS 15.7.3；构建目标 macOS 13+，Intel 与其他系统版本未实测。
+
+![真实原生窗口：仅临时测试项目和服务](docs/images/app-preview.png)
+
+截图来自实际应用的独立测试状态，[图片来源与复核](docs/images/README.md)。
 
 ## 功能
 
@@ -16,16 +20,17 @@
 
 ## 构建与启动
 
-需要 macOS、Command Line Tools（提供 Swift 和系统 Python 3）。容器操作另需 Docker CLI/Desktop；不需要完整 Xcode。
+需要 macOS 13+ 和 Command Line Tools（Swift 与系统 `/usr/bin/python3`）。缺少工具时运行 `xcode-select --install`，安装完成后再继续。产品 Python 后端仅使用标准库，无需 pip 安装。Docker 功能另需 Docker CLI/Desktop 与 Compose；运行 Java/Node 服务需自行安装其运行时。
 
 ```sh
 git clone https://github.com/Chillax73/codex-dev-services-manager.git
 cd codex-dev-services-manager
+/usr/bin/python3 scripts/doctor.py
 ./scripts/build.sh
 open "build/Codex Service Manager.app"
 ```
 
-构建生成本机 ad-hoc 签名的 `.app`；仓库提供源码，未提供公证安装包。关闭主窗口继续管理；退出管理应用保留服务与独立退出观察器。
+构建生成本机 ad-hoc 签名的 `.app`；[v0.1.0 开发者预览](https://github.com/Chillax73/codex-dev-services-manager/releases/tag/v0.1.0) 提供源码构建，未提供可下载安装的应用包或公证安装包。关闭主窗口继续管理；退出管理应用保留服务与独立退出观察器。
 
 ## 接入项目
 
@@ -41,9 +46,9 @@ open "build/Codex Service Manager.app"
 
 ```sh
 # 以下命令在目标项目目录执行；把入口路径替换为当前克隆的路径。
-/path/to/codex-service-manager/scripts/csm launch --name frontend --url http://127.0.0.1:5173 --port 5173 -- npm run dev
-/path/to/codex-service-manager/scripts/csm launch --name backend --url http://127.0.0.1:8080/health --port 8080 -- mvn spring-boot:run
-/path/to/codex-service-manager/scripts/csm launch --name worker --task -- python3 worker.py
+/path/to/codex-dev-services-manager/scripts/csm launch --name frontend --url http://127.0.0.1:5173 --port 5173 -- npm run dev
+/path/to/codex-dev-services-manager/scripts/csm launch --name backend --url http://127.0.0.1:8080/health --port 8080 -- mvn spring-boot:run
+/path/to/codex-dev-services-manager/scripts/csm launch --name worker --task -- python3 worker.py
 ```
 
 服务脱离启动工具进程存活，管理界面显示其记录。已有容器在创建后通过 `csm container` 登记；已有 Compose 项目使用原项目名登记。完整命令见 [接入说明](docs/INTEGRATION.md)。未经配套入口启动的普通进程只发现，不承诺自动接管或重启。
@@ -71,24 +76,27 @@ open "build/Codex Service Manager.app"
 
 ## 复验
 
-原始证据与临时状态目录不会随仓库分发，首次复验先创建这些本机目录：
+基础测试入口自动创建本机目录，无需手动 mkdir：
 
 ```sh
-mkdir -p .test-state docs/evidence
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_engine.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_support.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_endpoints.py
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_projects.py
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_docker.py
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_docker_failures.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_engine.py
 ```
 
-进程测试需要本机端口/进程权限。真实项目测试需 Node/npm、Maven/Java 及预先安装的夹具依赖；当前脚本使用已验收环境的 npm/Maven 路径，其他安装位置需调整。容器测试需运行中的 Docker 与本机已有 `python:3.12-slim` 镜像，仅操作带独立标记的测试资源。
+真实项目测试需要 Node（Vite 要求 `^20.19.0 || >=22.12.0`）、npm、Java 17+、Maven 3.6.3+；工具从 PATH 查找，也可配置 CSM_NPM/CSM_MAVEN。运行 `/usr/bin/python3 scripts/prepare_fixtures.py` 安装锁定的 npm/Maven 夹具依赖，再运行 `tests/verify_projects.py`，默认使用独立测试状态。详细安装、Docker 和 CI 步骤见 [复现与 CI](docs/TESTING.md)。
 
-原生 UI 与实际 Codex 退出需在解锁的真实桌面按 [验收索引](specs/001-service-manager/acceptance.md)操作；不可用模拟事件替代。原始结果写入本机 `docs/evidence/`。
+[GitHub CI](https://github.com/Chillax73/codex-dev-services-manager/actions/workflows/ci.yml) 检查 macOS 构建、Python 回归与发布隐私；[Docker 集成](https://github.com/Chillax73/codex-dev-services-manager/actions/workflows/docker.yml) 独立手动执行。CI 不包含实际窗口、系统菜单栏或真实 Codex 退出，仍需按 [验收索引](specs/001-service-manager/acceptance.md) 人工复验。原始证据仅保存在本机 `docs/evidence/`。
+
+## 使用与维护
+
+最小任务体验、故障排查、移除项目接入、停止独立观察器和数据清理见 [使用与卸载](docs/OPERATIONS.md)。删除数据目录不会停止服务，退出管理应用也不会自动停止观察器。
+
+欢迎通过模板提交问题或建议；开发流程见 [贡献说明](CONTRIBUTING.md)，安全问题使用 [私密反馈](SECURITY.md)。版本变化见 [CHANGELOG](CHANGELOG.md)，开源收尾证据见 [发布核验](docs/results/OPEN_SOURCE_READINESS.md)。
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)。
+本项目采用 [MIT License](LICENSE)。第三方依赖保留其各自许可，来源和分发边界见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)。
 
 ## 隐私
 

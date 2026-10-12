@@ -1,0 +1,51 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Dependencies
+        run: /usr/bin/python3 scripts/doctor.py
+      - name: Publish privacy scan
+        run: /usr/bin/python3 scripts/check_publish.py
+      - name: Workspace contracts
+        run: /usr/bin/python3 tests/test_support.py
+      - name: Endpoint contracts
+        run: /usr/bin/python3 tests/test_endpoints.py
+      - name: Real process acceptance
+        run: /usr/bin/python3 tests/test_engine.py
+      - name: Native build
+        run: ./scripts/build.sh
+      - name: Ad-hoc signature
+        run: codesign --verify --deep --strict 'build/Codex Service Manager.app'
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Locked fixture dependencies and advisories
+        working-directory: tests/fixtures/frontend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high

@@ -1,0 +1,377 @@
+{
+  "scope": "Runtime JARs resolved for the Spring test fixture; not distributed with source",
+  "components": [
+    {
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot",
+      "version": "3.5.5",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot/3.5.5/spring-boot-3.5.5.pom"
+    },
+    {
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-autoconfigure",
+      "version": "3.5.5",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-autoconfigure/3.5.5/spring-boot-autoconfigure-3.5.5.pom"
+    },
+    {
+      "group": "ch.qos.logback",
+      "artifact": "logback-classic",
+      "version": "1.5.18",
+      "licenses": [
+        {
+          "name": "Eclipse Public License - v 1.0",
+          "url": "http://www.eclipse.org/legal/epl-v10.html"
+        },
+        {
+          "name": "GNU Lesser General Public License",
+          "url": "http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-classic/1.5.18/logback-classic-1.5.18.pom"
+    },
+    {
+      "group": "ch.qos.logback",
+      "artifact": "logback-core",
+      "version": "1.5.18",
+      "licenses": [
+        {
+          "name": "Eclipse Public License - v 1.0",
+          "url": "http://www.eclipse.org/legal/epl-v10.html"
+        },
+        {
+          "name": "GNU Lesser General Public License",
+          "url": "http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-core/1.5.18/logback-core-1.5.18.pom"
+    },
+    {
+      "group": "org.slf4j",
+      "artifact": "slf4j-api",
+      "version": "2.0.17",
+      "licenses": [
+        {
+          "name": "MIT",
+          "url": "https://opensource.org/license/mit"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.pom"
+    },
+    {
+      "group": "org.apache.logging.log4j",
+      "artifact": "log4j-to-slf4j",
+      "version": "2.24.3",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-to-slf4j/2.24.3/log4j-to-slf4j-2.24.3.pom"
+    },
+    {
+      "group": "org.apache.logging.log4j",
+      "artifact": "log4j-api",
+      "version": "2.24.3",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-api/2.24.3/log4j-api-2.24.3.pom"
+    },
+    {
+      "group": "org.slf4j",
+      "artifact": "jul-to-slf4j",
+      "version": "2.0.17",
+      "licenses": [
+        {
+          "name": "MIT",
+          "url": "https://opensource.org/license/mit"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/slf4j/jul-to-slf4j/2.0.17/jul-to-slf4j-2.0.17.pom"
+    },
+    {
+      "group": "jakarta.annotation",
+      "artifact": "jakarta.annotation-api",
+      "version": "2.1.1",
+      "licenses": [
+        {
+          "name": "EPL 2.0",
+          "url": "http://www.eclipse.org/legal/epl-2.0"
+        },
+        {
+          "name": "GPL2 w/ CPE",
+          "url": "https://www.gnu.org/software/classpath/license.html"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/jakarta/annotation/jakarta.annotation-api/2.1.1/jakarta.annotation-api-2.1.1.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-core",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-core/6.2.10/spring-core-6.2.10.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-jcl",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-jcl/6.2.10/spring-jcl-6.2.10.pom"
+    },
+    {
+      "group": "org.yaml",
+      "artifact": "snakeyaml",
+      "version": "2.4",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/yaml/snakeyaml/2.4/snakeyaml-2.4.pom"
+    },
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-databind",
+      "version": "2.19.2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.19.2/jackson-databind-2.19.2.pom"
+    },
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-annotations",
+      "version": "2.19.2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.19.2/jackson-annotations-2.19.2.pom"
+    },
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-core",
+      "version": "2.19.2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.19.2/jackson-core-2.19.2.pom"
+    },
+    {
+      "group": "com.fasterxml.jackson.datatype",
+      "artifact": "jackson-datatype-jdk8",
+      "version": "2.19.2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/datatype/jackson-datatype-jdk8/2.19.2/jackson-datatype-jdk8-2.19.2.pom"
+    },
+    {
+      "group": "com.fasterxml.jackson.datatype",
+      "artifact": "jackson-datatype-jsr310",
+      "version": "2.19.2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/datatype/jackson-datatype-jsr310/2.19.2/jackson-datatype-jsr310-2.19.2.pom"
+    },
+    {
+      "group": "com.fasterxml.jackson.module",
+      "artifact": "jackson-module-parameter-names",
+      "version": "2.19.2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/module/jackson-module-parameter-names/2.19.2/jackson-module-parameter-names-2.19.2.pom"
+    },
+    {
+      "group": "org.apache.tomcat.embed",
+      "artifact": "tomcat-embed-core",
+      "version": "10.1.44",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/apache/tomcat/embed/tomcat-embed-core/10.1.44/tomcat-embed-core-10.1.44.pom"
+    },
+    {
+      "group": "org.apache.tomcat.embed",
+      "artifact": "tomcat-embed-el",
+      "version": "10.1.44",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/apache/tomcat/embed/tomcat-embed-el/10.1.44/tomcat-embed-el-10.1.44.pom"
+    },
+    {
+      "group": "org.apache.tomcat.embed",
+      "artifact": "tomcat-embed-websocket",
+      "version": "10.1.44",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/apache/tomcat/embed/tomcat-embed-websocket/10.1.44/tomcat-embed-websocket-10.1.44.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-web",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-web/6.2.10/spring-web-6.2.10.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-beans",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-beans/6.2.10/spring-beans-6.2.10.pom"
+    },
+    {
+      "group": "io.micrometer",
+      "artifact": "micrometer-observation",
+      "version": "1.15.3",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/io/micrometer/micrometer-observation/1.15.3/micrometer-observation-1.15.3.pom"
+    },
+    {
+      "group": "io.micrometer",
+      "artifact": "micrometer-commons",
+      "version": "1.15.3",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/io/micrometer/micrometer-commons/1.15.3/micrometer-commons-1.15.3.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-webmvc",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-webmvc/6.2.10/spring-webmvc-6.2.10.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-aop",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-aop/6.2.10/spring-aop-6.2.10.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-context",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-context/6.2.10/spring-context-6.2.10.pom"
+    },
+    {
+      "group": "org.springframework",
+      "artifact": "spring-expression",
+      "version": "6.2.10",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "pom_url": "https://repo.maven.apache.org/maven2/org/springframework/spring-expression/6.2.10/spring-expression-6.2.10.pom"
+    },
+    {
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-jarmode-tools",
+      "version": "3.5.5",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://github.com/spring-projects/spring-boot/blob/v3.5.5/LICENSE.txt"
+        }
+      ],
+      "license_source": "Spring Boot source LICENSE; embedded packaging helper"
+    }
+  ]
+}

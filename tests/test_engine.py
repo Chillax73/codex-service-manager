@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 import engine
 
 BASE = Path(__file__).resolve().parents[1]
+from support import prepare_workspace
+prepare_workspace()
 
 
 def free_port():

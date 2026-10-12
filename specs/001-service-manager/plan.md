@@ -41,3 +41,7 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 实际 Codex 退出由用户执行，独立 `tests/record_codex_quit.py` 经 `scripts/csm --task` 登记后观察原 Codex PID/出生身份消失、正式观察器产生的 codex_exit 操作、四项应停止服务及两项保留服务。记录程序不调用 codex_exit，不控制 Codex 界面。窗口关闭和菜单栏可见性需要实际界面证据或明确标注的人工观察；进程结果不能替代窗口证据。
 
 最终采用自动原生 UI 与人工真实桌面操作共同验收：28 项原生断言、用户确认菜单栏详情/关闭 Codex 窗口、独立实际退出记录。测试结束后按精确 service ID、容器标签、Compose 项目和卷标签清理，测试历史先归档，再移除本轮登记以免留下不存在容器的异常项；保留正式观察器及原有服务记录。
+
+## 开源交付方案
+
+在独立公开快照中实施，不迁移私有 Git 对象。测试 support 模块统一创建 ignored 工作目录并解析工具；真实项目默认使用唯一测试状态。应用继续使用系统 Python，不打包运行时。CI 使用只读权限与固定官方 checkout 提交，不上传原始证据。Docker 用独立临时 runner；真实窗口截图仅测试数据，经人工查看和 SHA-256 白名单后发布。依赖只供测试安装，源码发行包不包含 node_modules、JAR 或系统框架。首版采用 GitHub prerelease 自动生成源码归档，构建安装包/签名/公证留待二进制分发。

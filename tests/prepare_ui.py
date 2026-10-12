@@ -7,6 +7,8 @@ import sys
 import time
 import uuid
 BASE=Path(__file__).resolve().parents[1]
+from support import prepare_workspace
+prepare_workspace()
 TAG=uuid.uuid4().hex[:8]
 ROOT=BASE/'.test-state'/('ui-'+TAG)
 A=ROOT/'界面验收-A';B=ROOT/'界面验收-B'

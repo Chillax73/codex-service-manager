@@ -9,6 +9,8 @@ import time
 import uuid
 
 BASE=Path(__file__).resolve().parents[1]
+from support import prepare_workspace
+prepare_workspace()
 sys.path.insert(0,str(BASE / 'backend'))
 import engine
 
