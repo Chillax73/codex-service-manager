@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+CSM_SCRIPT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 "$CSM_SCRIPT_ROOT/backend/cli.py" "$@"

@@ -1,0 +1,21 @@
+{
+  "transport": "single JSON request on stdin; single JSON response on stdout; local child process",
+  "response": {"ok": true, "result": "action-specific JSON"},
+  "error": {"ok": false, "error": "diagnostic string; exit code 1"},
+  "examples": [
+    {"action": "snapshot"},
+    {"action": "launch", "name": "frontend", "cwd": "/absolute/project", "kind": "process", "argv": ["npm", "run", "dev"], "env": {"PORT": "5173"}, "url": "http://127.0.0.1:5173", "ports": [5173]},
+    {"action": "register_container", "container_id": "full-or-resolvable-id", "cwd": "/absolute/project"},
+    {"action": "register_compose", "file": "/absolute/project/compose.yaml", "cwd": "/absolute/project", "compose_project": "explicit-or-generated", "env": {}, "start": true},
+    {"action": "restart", "id": "service-id"},
+    {"action": "force", "id": "service-id"},
+    {"action": "batch", "project_id": "project-id", "group_id": "optional-group-id", "ids": ["optional-service-id"], "operation": "stop"},
+    {"action": "project_policy", "id": "project-id", "manual": true, "codex_exit": false},
+    {"action": "service_keep", "id": "service-id", "keep": true},
+    {"action": "end_project", "project_id": "project-id"},
+    {"action": "history", "id": "service-id"},
+    {"action": "logs", "id": "service-id", "run_id": "optional-run-id"},
+    {"action": "cleanup", "days": 30}
+  ],
+  "invariants": ["Mutations acquire a nonblocking exclusive lock", "Stop failure aborts restart", "Snapshots omit environment values", "Docker engine errors produce unknown state", "Batch results are per service and deduplicated"]
+}

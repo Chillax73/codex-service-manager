@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "validated_on": "2026-10-12",
+  "environment": {
+    "os": "macOS 15.7.3",
+    "architecture": "Apple Silicon",
+    "build_target": "macOS 13+"
+  },
+  "acceptance": {
+    "passed": [
+      "A-01",
+      "A-02",
+      "A-03",
+      "A-04",
+      "A-05",
+      "A-06",
+      "A-07",
+      "A-08",
+      "A-09",
+      "A-10",
+      "A-11",
+      "A-12",
+      "A-13",
+      "A-14",
+      "A-15",
+      "A-16"
+    ],
+    "scope": "项目配套入口登记、本机服务/任务、Docker/Compose；远程服务不在范围内"
+  },
+  "test_groups": [
+    {
+      "name": "本机进程集成",
+      "checks_passed": 14,
+      "passed": true,
+      "local_source": "process-tests.json"
+    },
+    {
+      "name": "真实前端/Java/Python 项目",
+      "checks_passed": 6,
+      "passed": true,
+      "local_source": "project-tests.json"
+    },
+    {
+      "name": "Docker/Compose 集成",
+      "checks_passed": 15,
+      "passed": true,
+      "local_source": "docker-tests.json"
+    },
+    {
+      "name": "真实容器失败场景",
+      "checks_passed": 8,
+      "passed": true,
+      "local_source": "docker-failures.json"
+    },
+    {
+      "name": "端点/时间/日志契约",
+      "checks_passed": 9,
+      "passed": true,
+      "local_source": "endpoint-tests.json"
+    },
+    {
+      "name": "实际原生界面",
+      "checks_passed": 28,
+      "passed": true,
+      "local_source": "ui-tests.json"
+    }
+  ],
+  "actual_codex_quit": {
+    "passed": true,
+    "source": "实际进程终止与独立 NSWorkspace 观察器，未合成事件",
+    "eligible_stopped": 4,
+    "retained_same_run": 2,
+    "watcher_survived": true
+  },
+  "human_observation": {
+    "codex_window_close_keeps_service": true,
+    "status_menu_detail_available": true,
+    "status_menu_each_control_repeated": false
+  },
+  "cleanup": {
+    "passed": true,
+    "test_services_removed": 10,
+    "test_containers_removed": 3,
+    "test_volume_removed": true,
+    "existing_containers_unchanged": true,
+    "docker_restored_off": true
+  },
+  "limitations": [
+    "未经配套入口启动的普通进程只发现，不承诺自动接管",
+    "其他 macOS 版本和 Intel 未实测",
+    "系统关机不保证停止完成",
+    "系统菜单栏详情由人工确认，快捷控制未逐项重复人工点击"
+  ],
+  "privacy": {
+    "method": "allowlist summary; no runtime metadata copied",
+    "excluded": [
+      "用户名/邮箱/绝对路径",
+      "聊天/会话标识",
+      "进程和容器标识",
+      "环境变量值与日志内容",
+      "原始截图与本机配置"
+    ]
+  }
+}

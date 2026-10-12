@@ -1,0 +1,48 @@
+# 实施与验证报告
+
+日期：2026-10-12。状态：原生应用已完成，本机 A-01 至 A-16 验收通过；测试资源已清理。
+
+发布材料见 [脱敏验收报告](results/VALIDATION.md)与 [结果摘要](results/validation-summary.json)。本文列出的原始 evidence 文件和截图仅保留本机，GitHub 不包含这些个人环境材料。
+
+## 产物与实现
+
+build/Codex Service Manager.app：SwiftUI/AppKit 主窗口、系统菜单栏、独立 NSWorkspace 退出观察器。Python 标准库引擎使用 SQLite WAL，管理本机服务、后台任务、Docker/Compose、历史、操作结果、日志与项目策略。scripts/csm 提供项目配套入口，当前项目已接入；spec、plan、tasks、数据模型与接口契约位于 specs/001-service-manager/。
+
+本机服务由独立监督进程管理，核对出生身份和运行 token，脱离 Codex 工具及管理 UI 存活。停止失败禁止继续重启。本机停止超时需显式强制；容器使用 Docker 原生 5 秒 stop，保留容器和数据。
+
+最新构建已运行并通过 codesign --verify --deep --strict。实测 macOS 15.7.3 / Apple Silicon；最低构建目标 macOS 13，其他系统/架构未测。最新实际窗口见 evidence/ui-latest-window.png。
+
+## 已通过的验证
+
+- process-tests.json：14 组真实本机进程验收，覆盖子进程、端口、身份、失败、任务、并发、策略、历史日志与监督器故障。
+- project-tests.json：6 项真实 npm/Vite、Maven/Spring、Python WSGI 启动、归属、就绪与重启；三个早期测试项目均已停止释放端口，见 project-cleanup.json。
+- docker-tests.json：15 项真实 Docker/Compose 检查；docker-failures.json：8 项真实容器失败；endpoint-tests.json：9 组端点、时间、日志契约检查。
+- ui-tests.json：28 项实际原生界面断言，覆盖重启/历史、任务重跑/环境覆盖、超时与显式强制、项目策略与例外、单容器/Compose 成员及整组、发现页、观察器故障/恢复、引擎不可用、批量部分失败、完整管理应用退出重开。
+- ui-container-state.json、ui-compose-single-state.json、ui-compose-group-state.json：真实 UI 操作后的对象身份、marker、成员隔离、逐项去重。
+- ui-policy-state.json：实际 UI 手动结束后的项目隔离与 keep 例外。
+- ui-watcher-recovery.json：正式观察器按身份停止后界面显示不可用，点击恢复创建新 PID 与有效心跳。
+- ui-manager-recovery.json：实际退出管理 UI 后进程消失，同一服务和观察器存活，重开恢复。
+- watcher-tests.json：真实可丢弃 macOS 应用窗口关闭/进程终止、独立观察器策略与清理。明确不替代实际 Codex 退出。
+- codex-chat-events.json：实际桌面 API 切换/归档现有空测试聊天后同一运行存活，测试聊天原状态已还原。不是 Codex 窗口关闭的证据。
+
+## 修复
+
+本轮修复项目/筛选后的运行数量错误、外部停止后历史未自动更新、原生应用缺少正常 Cmd-Q 菜单。服务菜单增加项目名和工作目录提示；Docker 日志标明“容器最近日志”，避免误认为单次运行日志。改动已重新构建，相关窗口和操作已实际检查。
+
+此前修复 TIME_WAIT 被当作占用、Docker 并发快照重复历史、stderr 遗漏、停止后缓存健康、Compose 文件标签归属/配置冲突、提前退出及启动拒绝未保存失败历史；真实集成证据保留。
+
+## 最终验收
+
+用户实际操作并确认：系统菜单栏详情入口可用；关闭 Codex 窗口后 UI 前端仍运行；真正退出 Codex 后 UI 前端停止。上述观察保存在 real-codex-quit.json 的 human_observation，明确标记为人工证据。菜单栏快捷停止/重启复用已验证控制链，未逐个重复人工点击，保留该覆盖边界。
+
+tests/record_codex_quit.py 经 scripts/csm --task 登记，已成功结束，结果为 actual_quit_verified。它只读取真实 PID/出生身份与正式观察器操作，不调用 codex_exit。原 Codex 进程终止后，独立观察器继续运行；本机、单容器、两个 Compose 成员共四项 codex_exit 停止操作均成功且各仅一次。keep 例外与另一项目服务仍为原运行 ID，未被误停；全部持久化到 evidence/real-codex-quit.json。
+
+本轮拥有的测试进程、三个容器、一个卷已清理，测试监听端口已释放；原有九个容器保持 exited 且启动时间未变，Docker 恢复关闭。10 项测试登记和已结束日志在历史归档后移除，避免不存在容器在日常 UI 留下假异常；归档和清理核验见 evidence/ui-cleanup.json。正式观察器与原有三个已停止服务记录保留。
+
+T01 至 T10 已完成。A-01 至 A-16 逐项结果见 specs/001-service-manager/acceptance.md；最终审核见 evidence/current-audit.json。构建后端与源码一致、原生源码未在构建后变化、签名验证通过。先前锁屏受阻记录保留为历史，已不适用于当前完成状态。
+
+## 使用边界
+
+项目结束有两个独立开关，默认手动开启、退出关闭，服务可持续运行。真正退出指最后一个目标桌面实例终止；系统通知无法区分普通退出/强制退出，两者均触发；关机不保证操作完成。退出管理 UI 保留服务与观察器。
+
+正常 Codex 启动经配套入口登记；未经入口启动的普通进程只发现，不承诺全部接管。环境只保存必要项和显式覆盖，UI 隐藏环境值；本机每次运行最多三个 1 MiB 日志文件，历史默认保留。

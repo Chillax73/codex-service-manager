@@ -1,0 +1,19 @@
+services:
+  web:
+    image: python:3.12-slim
+    pull_policy: never
+    command: [python, -m, http.server, "8000", --bind, "0.0.0.0"]
+    ports: ["127.0.0.1::8000"]
+  worker:
+    image: python:3.12-slim
+    pull_policy: never
+    command:
+      - sh
+      - -c
+      - "test -f /data/marker || printf round-one-marker > /data/marker; exec python -m http.server 8000 --bind 0.0.0.0"
+    ports: ["127.0.0.1::8000"]
+    volumes: ["data:/data"]
+volumes:
+  data:
+    external: true
+    name: ${CSM_POC_VOLUME}
