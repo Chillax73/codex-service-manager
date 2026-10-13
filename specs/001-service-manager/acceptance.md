@@ -84,6 +84,8 @@ S04–S05：构建及签名校验通过。真实原生 Picker 展示十一种状
 
 用户确认版本 0.2.0；重新构建成功，生成 Info.plist 实际读取 CFBundleShortVersionString=0.2.0、CFBundleVersion=2，签名严格校验通过。README/CHANGELOG 同步发布准备身份，98 个本地文档链接和差异格式通过，提交前检查 Git 索引隐私。不修改 v0.1.0 标签，不宣称已发布 0.2.0 Release；PR refs 与 CI 结果另记录。
 
+[PR #2](https://github.com/Chillax73/codex-service-manager/pull/2) 已创建并附着当前任务，实际 GitHub 元数据核对为 OPEN、非草稿、base=main、head=f_wqx_project-management、MERGEABLE。GitHub CI 在 PR 上运行 macOS 14/15 与依赖检查；结果以 PR 实际检查为准，不将本机构建等同 CI。PR 创建不代表合并，标签和 Release 仍未发布。
+
 ## D02 · 本轮文档同步
 
 需求基线升级为 0.2，明确已交付原版与新增任意聊天目标的区别；规格、设计、任务、模型/接口、README、接入/操作/测试说明与更新记录同步。G-08 至 G-10 保持未完成。提交前检查源码语法、JSON、文档本地链接、差异格式与 Git 索引隐私；不把文档检查当作新的运行或桌面验收。
