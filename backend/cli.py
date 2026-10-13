@@ -35,6 +35,7 @@ def main():
     launch.add_argument('--port', type=int, action='append', default=[])
     launch.add_argument('--task', action='store_true')
     launch.add_argument('--env', action='append', default=[])
+    launch.add_argument('--source', choices=['companion', 'internal'], default='companion')
     launch.add_argument('argv', nargs=argparse.REMAINDER)
     container = sub.add_parser('container')
     container.add_argument('container_id')
@@ -49,6 +50,12 @@ def main():
     compose.add_argument('--register-only', action='store_true')
     sub.add_parser('list')
     sub.add_parser('discover')
+    sub.add_parser('capture-start')
+    configure = sub.add_parser('configure-observed', help='补充观察服务的单项启动配置，不停止或启动服务')
+    configure.add_argument('id')
+    configure.add_argument('--cwd')
+    configure.add_argument('--env', action='append', default=[])
+    configure.add_argument('argv', nargs='+')
     for action in ('start', 'stop', 'restart', 'force', 'history', 'logs'):
         sub.add_parser(action).add_argument('id')
     policy = sub.add_parser('policy')
@@ -68,6 +75,11 @@ def main():
     args = parser.parse_args()
     if args.root:
         engine.ROOT = args.root.expanduser().resolve()
+    if args.action == 'capture-start':
+        import capture
+        capture.ensure_collector()
+        print(json.dumps({'ok': True, 'result': '自动采集组件已启动'}, ensure_ascii=False))
+        return
     req = vars(args).copy()
     req.pop('root', None)
     if args.action == 'launch':
@@ -78,6 +90,9 @@ def main():
         req['env'] = dict(value.split('=', 1) for value in req['env'])
     if args.action == 'container':
         req['action'] = 'register_container'
+    elif args.action == 'configure-observed':
+        req['action'] = 'configure_observed'
+        req['argv'] = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
     elif args.action == 'compose':
         req['action'] = 'register_compose'
         req['start'] = not args.register_only

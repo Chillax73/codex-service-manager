@@ -1,25 +1,126 @@
 {
   "transport": "single JSON request on stdin; single JSON response on stdout; local child process",
-  "response": {"ok": true, "result": "action-specific JSON"},
-  "error": {"ok": false, "error": "diagnostic string; exit code 1"},
+  "response": {
+    "ok": true,
+    "result": "action-specific JSON"
+  },
+  "error": {
+    "ok": false,
+    "error": "diagnostic string; exit code 1"
+  },
   "examples": [
-    {"action": "snapshot"},
-    {"action": "launch", "name": "frontend", "cwd": "/absolute/project", "kind": "process", "argv": ["npm", "run", "dev"], "env": {"PORT": "5173"}, "url": "http://127.0.0.1:5173", "ports": [5173]},
-    {"action": "register_container", "container_id": "full-or-resolvable-id", "cwd": "/absolute/project"},
-    {"action": "register_compose", "file": "/absolute/project/compose.yaml", "cwd": "/absolute/project", "compose_project": "explicit-or-generated", "env": {}, "start": true},
-    {"action": "restart", "id": "service-id"},
-    {"action": "force", "id": "service-id"},
-    {"action": "batch", "project_id": "project-id", "group_id": "optional-group-id", "ids": ["optional-service-id"], "operation": "stop"},
-    {"action": "project_policy", "id": "project-id", "manual": true, "codex_exit": false},
-    {"action": "service_keep", "id": "service-id", "keep": true},
-    {"action": "end_project", "project_id": "project-id"},
-    {"action": "history", "id": "service-id"},
-    {"action": "logs", "id": "service-id", "run_id": "optional-run-id"},
-    {"action": "cleanup", "days": 30},
-    {"action": "project_rename", "id": "project-id", "name": "My project"},
-    {"action": "project_delete_preview", "id": "project-id"},
-    {"action": "project_delete", "id": "project-id"},
-    {"action": "project_restore", "id": "deleted-project-archive-id"}
+    {
+      "action": "snapshot"
+    },
+    {
+      "action": "capture_start"
+    },
+    {
+      "action": "launch",
+      "name": "frontend",
+      "cwd": "/absolute/project",
+      "kind": "process",
+      "argv": [
+        "npm",
+        "run",
+        "dev"
+      ],
+      "env": {
+        "PORT": "5173"
+      },
+      "url": "http://127.0.0.1:5173",
+      "ports": [
+        5173
+      ]
+    },
+    {
+      "action": "configure_observed",
+      "id": "observed-service-id",
+      "argv": [
+        "npm",
+        "run",
+        "dev"
+      ],
+      "cwd": "/absolute/project",
+      "env": {
+        "PORT": "5173"
+      }
+    },
+    {
+      "action": "register_container",
+      "container_id": "full-or-resolvable-id",
+      "cwd": "/absolute/project"
+    },
+    {
+      "action": "register_compose",
+      "file": "/absolute/project/compose.yaml",
+      "cwd": "/absolute/project",
+      "compose_project": "explicit-or-generated",
+      "env": {},
+      "start": true
+    },
+    {
+      "action": "restart",
+      "id": "service-id"
+    },
+    {
+      "action": "force",
+      "id": "service-id"
+    },
+    {
+      "action": "batch",
+      "project_id": "project-id",
+      "group_id": "optional-group-id",
+      "ids": [
+        "optional-service-id"
+      ],
+      "operation": "stop"
+    },
+    {
+      "action": "project_policy",
+      "id": "project-id",
+      "manual": true,
+      "codex_exit": false
+    },
+    {
+      "action": "service_keep",
+      "id": "service-id",
+      "keep": true
+    },
+    {
+      "action": "end_project",
+      "project_id": "project-id"
+    },
+    {
+      "action": "history",
+      "id": "service-id"
+    },
+    {
+      "action": "logs",
+      "id": "service-id",
+      "run_id": "optional-run-id"
+    },
+    {
+      "action": "cleanup",
+      "days": 30
+    },
+    {
+      "action": "project_rename",
+      "id": "project-id",
+      "name": "My project"
+    },
+    {
+      "action": "project_delete_preview",
+      "id": "project-id"
+    },
+    {
+      "action": "project_delete",
+      "id": "project-id"
+    },
+    {
+      "action": "project_restore",
+      "id": "deleted-project-archive-id"
+    }
   ],
   "invariants": [
     "Mutations acquire a nonblocking exclusive lock",
@@ -31,6 +132,25 @@
     "Project deletion rechecks activity and unknown state under mutation lock",
     "Project deletion archives records transactionally without touching processes, source, containers or volumes",
     "Restore never starts services or overwrites existing project/service IDs",
-    "Deleted project summaries omit private specifications"
-  ]
+    "Deleted project summaries omit private specifications",
+    "Observed services expose independent verified capabilities; project end skips original observed runs",
+    "Internal capture services are omitted from normal snapshots and skipped by batch control",
+    "Capture hooks persist whitelisted identity metadata and conservative structured launch recipes, never raw tool commands/output, complete environments or transcripts",
+    "Configured user hooks and a live collector do not prove that an existing desktop thread loaded hooks",
+    "capture_start uses a collector startup lock and the registered launch path without nesting the global mutation lock",
+    "Observed stop verifies each launcher/descendant identity and never signals shared process groups or the tool shell",
+    "configure_observed preserves service/run identity and does not start or stop processes",
+    "Restart creates a supervised run in the selected state root only after the old tree and ports are released"
+  ],
+  "snapshot_fields": {
+    "service.management": "managed | attached (some verified manual capabilities) | observed (no current control)",
+    "service.can_start": "boolean; requires restart recipe and no unfinished launcher/tree",
+    "service.can_stop": "boolean; verified supervisor, container or observed single-service scope",
+    "service.can_restart": "boolean; requires repeatable recipe and safe current stop scope",
+    "service.can_logs": "boolean; false for observed native processes/tasks",
+    "capture": "null or local collector metadata with computed alive; not a desktop hook reload status",
+    "service.can_force": "boolean; verified remaining scope after stop failure (Docker identity when available)",
+    "service.capability_reason": "null or reason for missing/rejected capability",
+    "service.automatic_end": "boolean; false until original observed service starts through manager"
+  }
 }

@@ -2,20 +2,23 @@
 
 一个供个人开发使用的原生 macOS 服务管理应用。本项目是独立第三方工具，与 OpenAI 没有官方关联。主要用于管理 Codex 在本机开发时启动的服务：通过配套入口按项目登记前端、后端、后台任务、Docker 容器和 Compose 服务，查看状态、启停、日志与运行历史。
 
+当前源码版本为 **0.2.0**（发布准备），应用构建号为 **2**。本次更新包含用户级自动观察、按能力接管、项目管理、状态徽标、精确状态筛选与项目汇总；详情见 [更新记录](CHANGELOG.md)。已发布的源码预览标签仍是 v0.1.0，0.2.0 标签与 GitHub Release 尚未发布。
+
 当前版本已完成本机 A-01 至 A-16 验收，包含真实 Codex 退出检测。真实桌面实测环境为 Apple Silicon / macOS 15.7.3；构建目标 macOS 13+。macOS 14/15 的构建与引擎回归已通过 GitHub CI；Intel 和其他系统版本的窗口/Codex 退出流程尚未人工验收。
 
 ![真实原生窗口：仅临时测试项目和服务](docs/images/app-preview.png)
 
-截图来自实际应用的独立测试状态，[图片来源与复核](docs/images/README.md)。
+截图来自 2026-10-12 实际应用的独立测试状态，展示原版界面；新增状态徽标、完整状态筛选和项目汇总见下方说明。[图片来源与复核](docs/images/README.md)。
 
 ## 功能
 
-- 项目归属与搜索：使用规范化工作目录区分项目，支持运行中和需关注筛选。
+- 项目归属与搜索：使用规范化工作目录区分项目；开发分支支持十一种运行状态逐项筛选，以及全部/需关注汇总，与项目和搜索同时生效。
+- 全局自动观察（开发分支）：已审核并加载用户级 hooks 的新聊天，常见 TCP 服务与持续后台任务自动显示；旧聊天及复杂脚本覆盖仍待补齐。
 - 项目管理（开发分支）：修改显示名称、预览并删除无活动/未知服务的项目登记；支持撤销和恢复，不删除源码/容器/卷。
-- 状态：区分进程运行状态、HTTP/容器健康与管理组件不可用。
+- 状态：区分进程运行状态、HTTP/容器健康与管理组件不可用；开发分支用彩色图标和中文徽标显示状态，项目栏显示汇总状态、运行数量、服务总数及需关注数量。
 - 控制：停止、启动已保存服务、重启；任务取消和重新执行。停止失败时禁止继续重启。
 - Docker/Compose：单容器、单成员、整组控制；停止保留容器与数据，组成员操作去重。
-- 历史：每次运行独立记录起止时间、退出码、诊断及日志；本机日志按运行分离并滚动。
+- 历史：每次运行独立记录可获取的起止、结果与诊断；配套入口采集退出码和按运行滚动的日志，观察对象不补回未采集信息。
 - 项目结束：每个项目独立选择手动结束、退出 Codex、两者或持续运行；服务可设置保留例外。
 - 原生界面：主窗口、系统菜单栏、详情、日志、历史、配置、发现与观察器恢复。
 
@@ -33,7 +36,29 @@ open "build/Codex Service Manager.app"
 
 构建生成本机 ad-hoc 签名的 `.app`；[v0.1.0 开发者预览](https://github.com/Chillax73/codex-service-manager/releases/tag/v0.1.0) 提供源码构建，未提供可下载安装的应用包或公证安装包。关闭主窗口继续管理；退出管理应用保留服务与独立退出观察器。
 
-## 接入项目
+## 用户级自动观察（开发分支）
+
+安装一次用户级接入，保留其他 hooks；安装不会授予信任：
+
+```sh
+/usr/bin/python3 scripts/install_global_capture.py --instructions
+```
+
+在 Codex CLI 的 `/hooks` 中逐项审核本工具的 `PreToolUse`、`PostToolUse`，确认来源为 User config、命令指向 `backend/capture.py hook`。开始新聊天加载配置，无需逐项目修改 AGENTS.md。可用 `/usr/bin/python3 scripts/check_capture_hooks.py /项目目录` 检查来源及 trusted/enabled，再实际启动服务验证。
+
+独立采集组件自动启动，已关联服务按能力开放控制：可靠的单项进程树可停止，常见简单启动命令自动保存必要配置后可重启；历史服务可在详情“配置启动方式…”补齐单项命令。观察中的原运行不参与结束策略，经管理器再次启动后升级为已管理。无端口持续任务约 30 秒后显示，原本未采集的输出和退出码无法补回。直接 Docker/Compose 有身份/标签证据时可按能力控制。验证及范围见 [普通启动接管](docs/results/ORDINARY_ADOPTION.md)。
+
+当前不补录启用前的既有服务，不覆盖远端或不触发 shell hooks 的路径；采样前已完全脱离进程树的特殊启动脚本、脚本内部未捕获身份的 Docker 操作仍可能漏记。旧聊天配置加载缺口已复现，新开窗口继续同一聊天未解决；当前没有已验收的热加载操作。覆盖与真实桌面验收见 [自动观察报告](docs/results/GLOBAL_CAPTURE.md)，启用/移除见 [接入说明](docs/INTEGRATION.md)。该功能尚未包含在 v0.1.0 标签。
+
+### 另一个窗口启动后没有出现
+
+先区分“新窗口”与“新聊天”：安装前已打开的旧聊天可能没有加载新增 hooks。配置检查脚本启动的是独立短时 app-server，`trusted/enabled` 与采集器心跳正常都不能证明旧聊天实际触发了回调。
+
+当前可用路径是新建聊天验证真实采集，或通过下方配套入口获得完整控制；不要为了登记而重复启动已经运行的业务服务。管理器没有对启用前对象做后台补录，原生发现页也不是自动登记。检查实际 PID/出生身份、端口或 Docker 状态；聊天声称启动完成不能代替现场运行状态。详细步骤见 [排障说明](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
+
+普通启动的可靠停止、常见命令/显式配置重启已交付。“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、任意复杂包装自动拆分；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](specs/001-service-manager/tasks.md)。
+
+## 接入项目（完整控制）
 
 在当前克隆的根目录初始化本机项目指令：
 
@@ -52,7 +77,7 @@ open "build/Codex Service Manager.app"
 /path/to/codex-service-manager/scripts/csm launch --name worker --task -- python3 worker.py
 ```
 
-服务脱离启动工具进程存活，管理界面显示其记录。已有容器在创建后通过 `csm container` 登记；已有 Compose 项目使用原项目名登记。完整命令见 [接入说明](docs/INTEGRATION.md)。未经配套入口启动的普通进程只发现，不承诺自动接管或重启。
+服务脱离启动工具进程存活，管理界面显示其记录。已有容器在创建后通过 `csm container` 登记；已有 Compose 项目使用原项目名登记。完整命令见 [接入说明](docs/INTEGRATION.md)。全局自动观察与配套入口去重；完整控制仍依赖保存的可靠启动配置。
 
 ## 项目名称、删除与恢复
 
@@ -62,17 +87,35 @@ open "build/Codex Service Manager.app"
 
 该功能在开发分支，尚未包含在 v0.1.0 标签；验证见 [项目管理验收](docs/results/PROJECT_MANAGEMENT.md)。
 
+## 状态颜色、筛选与项目汇总（开发分支）
+
+服务列表、详情和运行历史保留中文状态，配合彩色图标与徽标；运行与健康分别标注，健康徽标以“健康”开头。
+
+| 颜色 | 对应状态 |
+|---|---|
+| 绿色 | 运行中、任务成功、健康可用。 |
+| 红色 | 已退出、已停止、失败、停止失败、健康不可用。已退出/已停止表示当前未运行，不等于失败。 |
+| 橙色 | 启动中、停止中、检查中、未知，以及项目“需关注”提示。 |
+| 灰色 | 未运行、已取消、未配置健康检查；空项目显示“无服务”。 |
+
+搜索框右侧的状态筛选器可直接选择运行中、已退出、已停止、失败、停止失败、成功、未知、启动中、停止中、已取消、未运行。每项精确匹配运行状态；例如“运行中”不包含“停止中”或“停止失败”。“需关注”汇总失败、停止失败、未知、健康不可用或带诊断问题的服务。没有结果时可切换状态或清空搜索词。
+
+左侧项目栏始终按全部所属服务汇总，不受搜索或服务筛选影响。有运行中服务时显示绿色“运行中 N”和服务总数；同项目有异常时另显示橙色“需关注 N”。无运行中服务时优先显示启动中、停止中、停止失败、未知、失败；其余状态相同时沿用该状态，不同静态状态显示“无运行”。汇总用于查看，不触发启停或结束策略。
+
+这些更新尚未包含在 v0.1.0 标签。构建、实际窗口、筛选联动及项目状态刷新结果与覆盖边界见 [状态显示验收](docs/results/STATUS_DISPLAY.md)。
+
 ## Codex Hooks 的作用与使用
 
-当前正式版使用下列机制管理 Codex 启动的服务：
+发布版与开发分支的接入职责如下：
 
 | 机制 | 职责 |
 |---|---|
 | `AGENTS.md` + `scripts/csm` | 引导 Codex 遵循项目约定，通过入口启动/登记服务，保存项目归属与每次运行。 |
 | 原生退出观察器 | 监听 Codex 应用最后一个实例终止，按项目配置停止服务，保留例外优先。 |
+| 开发分支用户级 `backend/capture.py` hooks | 记录启动身份，独立采集服务；已完成一个新桌面聊天的真实工具回调和原生窗口验证。 |
 | `validation/` 中的 Codex hooks | 可选的早期实验，仅记录生命周期/工具事件元数据，未接入正式服务自动登记或启停。 |
 
-日常管理按上面的“接入项目”使用即可，无需安装实验 hooks。项目指令是让 Codex 使用登记入口的约定；当前 hooks 不会自动改写普通启动命令或接管所有已有进程。`SessionEnd` 也可能由归档、删除会话或闲置触发，不能作为应用退出的唯一判断。[OpenAI Hooks 官方说明](https://learn.chatgpt.com/docs/hooks#sessionend)
+完整控制按上面的“接入项目”使用；无需逐项目配置的自动观察使用新的用户级采集 hooks，适用当前已验证路径。下面的 `validation/` hooks 仍只是早期事件实验，不是新的采集组件。`SessionEnd` 也可能由归档、删除会话或闲置触发，不能作为应用退出的唯一判断。[OpenAI Hooks 官方说明](https://learn.chatgpt.com/docs/hooks#sessionend)
 
 如需复验 hooks，在本仓库克隆根目录进行：
 
@@ -115,7 +158,7 @@ open "build/Codex Service Manager.app"
 
 实际退出 Codex 后，本机服务、单容器、两个 Compose 成员共四项按策略停止；保留例外和另一项目继续同次运行，观察器独立存活。用户确认关闭窗口不误停、系统菜单栏详情入口可用。菜单栏快捷控制未逐项重复人工点击，明确保留该验证边界。
 
-测试资源已清理，原有容器状态保持不变。结果见 [验收报告](docs/results/VALIDATION.md)、[机器可读脱敏摘要](docs/results/validation-summary.json)及 [A-01 至 A-16 索引](specs/001-service-manager/acceptance.md)。这些是本机验收记录，不是 GitHub CI 或全平台通过声明。
+测试资源已清理，原有容器状态保持不变。结果见 [验收报告](docs/results/VALIDATION.md)、[机器可读脱敏摘要](docs/results/validation-summary.json)及 [A-01 至 A-16 索引](specs/001-service-manager/acceptance.md)。这些是本机验收记录，不是 GitHub CI 或全平台通过声明。新增自动观察另有 8 组进程、6 项容器断言、一个新桌面聊天与实际原生窗口证据，见 [独立报告](docs/results/GLOBAL_CAPTURE.md)；旧聊天和后台兜底仍未完成。
 
 ## 复验
 
@@ -125,6 +168,8 @@ open "build/Codex Service Manager.app"
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_support.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_endpoints.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_engine.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_projects.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py
 ```
 
 真实项目测试需要 Node（Vite 要求 `^20.19.0 || >=22.12.0`）、npm、Java 17+、Maven 3.6.3+；工具从 PATH 查找，也可配置 CSM_NPM/CSM_MAVEN。运行 `/usr/bin/python3 scripts/prepare_fixtures.py` 安装锁定的 npm/Maven 夹具依赖，再运行 `tests/verify_projects.py`，默认使用独立测试状态。详细安装、Docker 和 CI 步骤见 [复现与 CI](docs/TESTING.md)。
@@ -159,5 +204,6 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_engine.py
 
 - [需求文档](docs/PROJECT_REQUIREMENTS.md)
 - [Coding spec](specs/001-service-manager/spec.md)、[实现设计](specs/001-service-manager/plan.md)、[数据模型](specs/001-service-manager/data-model.md)
-- [实施任务](specs/001-service-manager/tasks.md)、[实施报告](docs/IMPLEMENTATION_REPORT.md)
+- [实施任务](specs/001-service-manager/tasks.md)、[实施报告](docs/IMPLEMENTATION_REPORT.md)、[自动观察验收与限制](docs/results/GLOBAL_CAPTURE.md)
+- [状态颜色、筛选与项目汇总验收](docs/results/STATUS_DISPLAY.md)
 - [第一轮原型记录](validation/ROUND1_REPORT.md)（独立于产品验收）

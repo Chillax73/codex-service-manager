@@ -12,6 +12,32 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_projects.py
 
 入口自动创建 ignored `.test-state/` 与 `docs/evidence/`。进程验收启动真实测试服务，需要本机进程与端口权限，只清理自己的服务，保留本机诊断。原始诊断不上传。
 
+## 用户级自动观察（开发分支）
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py
+# Docker/Compose 可用且 python:3.12-slim 已存在时：
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_capture_docker.py
+```
+
+进程入口使用独立临时状态，启动真实采集器及测试进程，需要本机进程/端口权限。现含 21 组：原有采集、普通接管/配置、Vite、离线 Maven/Spring、多服务/已登记任务隔离、身份/超时/防副本及独立 RPC 状态目录。容器入口使用唯一测试标签、已有镜像，比较原有容器状态，现含 7 项检查。hook 输入为显式模拟，不能当作真实桌面回调。原生 UI 的实际操作及独立进程核验见 adoption-ui-tests.json，综合结果见 [普通启动接管](results/ORDINARY_ADOPTION.md)。当前通用 CI 尚未运行这两个入口；macOS ps/lsof 采集不能直接加入 Linux Docker job。
+
+真实桌面验收另行进行：正常安装并逐项审核两个 User config handler，在用户授权的新聊天里让 Codex 运行 `tests/desktop_capture_fixture.py --seconds 120`。夹具直接产生两个 HTTP 服务和一个持续任务，测试的是原始 shell 启动采集，不经 csm launch；普通开发长期服务仍遵循项目配套入口。说明自动附加 arm 检查点及本机元数据副作用，正常申请测试端口/进程权限。夹具清理自己的子进程；核对实际事件、项目、原生窗口运行数量、观察标识和禁用控制，不把手动终端执行当作工具事件。
+
+`check_capture_hooks.py` 只启动独立短时 app-server 检查配置；它不重载桌面共享运行时，ready=true 不能证明旧聊天生效。G-08 必须在安装前已打开的同一旧聊天验证真实事件，G-09 必须验证无 hook 的实际候选及归属排除，均未完成。原生恢复、实际 Quit 后采集器存活和菜单栏/窗口关闭的覆盖边界见 [自动观察报告](results/GLOBAL_CAPTURE.md)。
+
+## 状态界面复验（开发分支）
+
+重新构建后，在解锁桌面使用独立测试状态目录。通过 scripts/csm 登记测试服务及验收窗口，使 GUI、CLI 和观察器使用相同的 `--root`；不使用业务服务制造状态或验证启停。
+
+1. 准备两个测试项目：一项持续运行进程、一项正常退出进程、一项成功任务和一项失败进程。等待实际结束后核对运行状态，不能在刚启动的快照里假定任务已经结束。
+2. 检查列表、详情、历史中的颜色/图标/文字，以及选中行可读性；健康应单独标注。
+3. 分别选择运行中、已退出、已停止和需关注；切换项目、输入及清空搜索词，核对列表、数量和空结果。状态逐项精确匹配，项目汇总不受筛选影响。
+4. 在另一个项目登记唯一持续运行的测试服务，通过 UI/CLI 停止后，确认项目自动由绿色运行中变为红色已停止，另一项目状态保持不变。
+5. 通过登记 ID 停止测试服务和窗口，核对出生身份及测试观察器归属后清理；保留正式组件。截图和运行元数据仅保留本机。
+
+构建、签名和实际窗口已有本机结果，见 [状态显示验收](results/STATUS_DISPLAY.md)。CI 构建不能替代选中行、真实筛选和项目状态刷新的桌面证据；菜单栏与深色模式的未实测边界另行记录。
+
 ## 真实 Vite / Spring / Python 项目
 
 Vite 7.3.7 要求 Node `^20.19.0 || >=22.12.0`（见锁文件）；Java 17+、Maven 3.6.3+、npm 必须可用。可按自己的包管理器安装 Node/Maven/JDK，设置 JAVA_HOME；`/usr/bin/python3 scripts/doctor.py --projects` 检查可执行文件。系统 PATH 优先，也可指定 `CSM_NPM`、`CSM_MAVEN` 的可执行文件绝对路径（空格无需改写源码）。
@@ -34,6 +60,6 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_project_docker.py
 
 Docker/Compose 可用，测试以唯一标签隔离对象并核对原有容器状态，删除仅测试拥有的容器/卷。镜像版本标签可能更新，结果须同时保留本机具体镜像 ID。
 
-`.github/workflows/ci.yml` 在 push/PR 上运行 macOS 构建、签名验证、14 组真实进程、9 组端点、3 组目录/工具契约、13 组项目管理契约和隐私扫描，并在独立 Linux job 检查锁定 npm 夹具依赖的高危公告。`.github/workflows/docker.yml` 在独立 Linux runner 手动执行 Docker/Compose 、真实失败场景及项目改名/删除/恢复。这不表示应用支持 Linux。工作流无写权限、不上传原始证据。
+`.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名验证、14 组真实进程、9 组端点、3 组目录/工具契约、13 组项目管理契约和隐私扫描，并在独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会自动触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 手动执行 Docker/Compose 、真实失败场景及项目改名/删除/恢复。这不表示应用支持 Linux。工作流无写权限、不上传原始证据。
 
 真实主窗口、菜单栏与实际 Codex 退出继续使用 [验收索引](../specs/001-service-manager/acceptance.md) 在解锁桌面操作；引擎中的合成策略测试只能验证规则，不是实际退出证据。

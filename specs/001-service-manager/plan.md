@@ -4,7 +4,7 @@
 
 原生 `.app`（SwiftUI 工作区 + AppKit 菜单栏）→ JSON stdin/stdout RPC → Python 标准库管理引擎 → SQLite WAL。
 
-每个本机运行由独立监督进程持有子进程，脱离启动工具和 UI 生存。监督进程负责信号、输出滚动、自然完成和退出码。管理请求通过文件锁串行写入；读操作独立，GUI 在后台执行不阻塞主线程。
+每个经配套入口启动的本机运行由独立监督进程持有子进程，脱离启动工具和 UI 生存。监督进程负责信号、输出滚动、自然完成和退出码。管理请求通过文件锁串行写入；读操作独立，GUI 在后台执行不阻塞主线程。
 
 独立原生观察器订阅 NSWorkspace 应用终止，按 bundle ID 与实例集合判断最后实例退出，再调用引擎批量结束。观察器无需模型、无需聊天 Hook；SessionEnd 从不作为退出信号。退出观察器有独立 PID/身份状态和日志。
 
@@ -12,7 +12,37 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 
 配套入口 `scripts/csm` 提供 launch / container / compose / list / stop / restart 等命令，cwd 自动成为项目。项目接入安装器加入带边界标记的 AGENTS.md 段落（可移除），要求 Codex 服务启动走该入口。接入文档随项目分发，不要求依赖未证实的 hooks。
 
-## 数据模型
+## 任意本机聊天自动观察（2026-10-12）
+
+新增用户级 PreToolUse/PostToolUse hook 与独立采集组件。PreToolUse 在原命令前后加入 arm 检查点，通过本机临时目录的 0600 FIFO 将 shell 父进程身份发送给采集器，避免在业务沙箱里访问数据库或进程表。末尾检查点在 shell 退出前记录直接后台子进程，并用独立变量保留原命令退出码；显式 exec/exit 维持原行为、跳过末尾检查点。保留原命令文本、shell、cwd、stdin/stdout；arm 失败不阻止业务命令。不对 write_stdin 重复插入。工具命令仅临时识别 Docker/Compose 启动信息，持久化事件只含白名单元数据，不保存完整命令/输出/聊天或环境。
+
+采集组件通过 scripts/csm 作为内部后台任务启动，使用状态目录作稳定 cwd，并持有单实例锁；约每 0.5 秒采集进程树，记住已验证后代的 PID+出生身份以跨 reparent 跟踪。监听进程按实际 PID 去重，一次脚本产生多个监听进程分别记录，已由配套入口管理的进程排除。持续 30 秒的无监听叶子进程列为后台任务。Compose 关联需实际标签与启动上下文匹配，单容器需工具返回的容器 ID；没有可靠归属的容器不认领。Docker 观察使用字段白名单，不读取完整容器环境或健康日志。组件独立于管理窗口/聊天生存，UI 展示心跳和恢复入口。
+
+自动观察服务继续使用 services/runs，spec 增加 management=observed、source=global_hook、归属依据；runtime 保存实际 PID/出生时间或容器 ID。状态刷新不依赖监督进程，进程退出记录结束时间但未知退出码；不恢复之前未采集日志。首阶段控制请求由后端拒绝；本轮改为独立能力，手动批量按能力执行，原运行结束策略跳过。后台内部采集任务从常规列表排除，状态通过 metadata 展示。采集器状态文件和事件均在状态目录并受 0700/0600 权限保护。
+
+用户级安装器保留无关 hooks、首次备份、只移除自己的 handler，不写信任数据库，不改业务项目。验证先实测当前桌面回调，再验证跨项目、脚本多进程、直接容器/Compose、去重、身份变化、观察器恢复和实际窗口。无法在当前聊天自动重新加载用户配置时保留安装结果，并明确需要正常审核和新聊天的验收边界。
+
+## 旧聊天与后台发现：待实施设计
+
+旧聊天复查已发现：配置检查能看到两个 trusted/enabled handler，采集器心跳正常，但同一旧聊天的后续启动没有 arm 检查点或采集事件。换窗口继续旧聊天不等于加载新配置。`check_capture_hooks.py` 启动独立短时 app-server 读取配置，不连接桌面共享运行时，也不能确认或修复旧聊天加载状态。
+
+下一步先评估正常共享运行时配置重载接口，实测同一旧聊天的无害命令和测试服务；目前没有可对用户承诺的重载命令。不得通过编辑信任数据库或放宽沙箱实现重载，不能直接退出 Codex 作为无副作用的修复（退出可能触发已管理项目的结束策略）。
+
+后台发现兜底仍待实施：基于实际进程身份、cwd 和指定容器标签产生候选，保留独立的发现来源与归属依据；仅凭端口、可执行名称或时间不能标为 Codex 启动。证据不足保留在发现列表，不能伪造启动事件或事后完整历史。首轮需验证旧聊天启动、原有对象、多项目/worktree、无关进程排除和已退出对象，再扩展包装脚本与脚本内部 Docker。
+
+复杂脚本重启另行实施，只有确认控制对象、必要环境与启动方式后才升级为已管理；自动观察本身不改变业务进程的存活方式。旧聊天与后台发现仍未交付；普通启动接管的常见路径与显式配置已按下节实施，任意复杂包装自动拆分仍待扩展。
+
+## 普通启动接管实施
+
+新增 adoption 模块：按采集关联、PID/出生身份、实时父子树及其他服务范围生成停止计划。逐个复核后向启动器和子进程发信号，不使用共享 killpg；超时保存停止失败及已确认成员，支持显式强制停止。端口只用于停止后核验，不作为认领依据。
+
+PreToolUse 保守识别无 shell 运算、展开、环境赋值或敏感参数的常见单项启动，保存 argv 候选。arm 只传递 PATH/LANG/JAVA_HOME 白名单。候选只有匹配实际启动器且范围不含其他监听服务时才能重启；未知包装不猜测。configure_observed RPC/CLI/原生表单可补齐显式配置。
+
+observe 输出独立能力和 capability_reason；operate 每次重查。旧运行按观察身份控制，新运行使用监督器并升级为 managed；采集器不得覆盖监督运行。手动批量按能力执行，项目结束触发继续跳过观察对象。
+
+隔离真实测试覆盖旧记录、直接启动、包装进程、复杂脚本、身份变化、停止失败、历史/去重、隐私和实际 UI。正式业务服务只读核对，不用于测试停止。
+
+## 数据模型（现有）
 
 - projects(id, cwd 唯一, name, manual, codex_exit)
 - services(id, project_id, name, kind, spec JSON, keep, group_id)
@@ -24,15 +54,21 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 
 ## 接口
 
-`engine.py rpc` 从 stdin 读取单个 JSON `{action, ...}`，stdout 输出 `{ok, result}` 或 `{ok:false,error}`，错误退出非零。主要 action：snapshot、launch、register_container、register_compose、start/stop/restart/force、project_policy、service_keep、end_project、codex_exit、history、logs、discover、cleanup、watcher_event。
+`engine.py rpc` 从 stdin 读取单个 JSON `{action, ...}`，stdout 输出 `{ok, result}` 或 `{ok:false,error}`，错误退出非零。主要 action：snapshot、capture_start、launch、register_container、register_compose、start/stop/restart/force、project_policy、service_keep、end_project、codex_exit、history、logs、discover、cleanup、watcher_event。
 
-所有启动保存 argv 数组，不通过拼接 shell 命令执行；GUI 手工输入命令仅由 shlex 分词，需要 shell 语义时明确使用 shell argv。
+配套入口的启动保存 argv 数组，不通过拼接 shell 命令执行；GUI 手工输入命令仅由 shlex 分词，需要 shell 语义时明确使用 shell argv。
 
 ## 界面设计
 
 视觉主张：macOS 原生浅深色自适应，蓝色操作强调，紧凑可读的分栏工作区。
 内容：左侧项目导航、中间服务/搜索/状态筛选、右侧配置/日志/历史；菜单栏为快速操作。
 交互：选择详情过渡、操作状态反馈、系统 sheet 配置。尊重减少动态效果设置。
+
+状态辨识采用共享 StatusAppearance 映射系统语义色与 SF Symbols，SwiftUI StatusBadge 提供图标、文字、浅色填充与边框。徽标使用独立自适应底色，选中行仍保留状态色；健康徽标显式加“健康”前缀。菜单栏每项使用相同映射的非模板彩色图标。状态标识不改变后端模型或控制链。
+
+状态筛选复用现有 Picker，补齐十一种运行状态；常见运行中/已退出/已停止/失败排在前部，其余状态与需关注可直接选取。除全部与需关注外统一精确匹配 state，运行中不再混入停止中/停止失败；项目、搜索与计数继续沿用现有快照。
+
+ProjectStatus 从完整项目服务快照汇总主状态、运行数量、总数和需关注数量；服务筛选和项目汇总复用 needsAttention。ProjectRow 的 Equatable 比较包含状态摘要，状态改变时刷新行而摘要未变时保留菜单稳定性。项目行保留名称/目录，另显示状态和服务数量，需关注另起一行以适应侧栏宽度。
 
 ## 构建与测试
 
@@ -46,9 +82,11 @@ Docker 适配器使用明确容器 ID、Compose project/service/config_files/wor
 
 在独立公开快照中实施，不迁移私有 Git 对象。测试 support 模块统一创建 ignored 工作目录并解析工具；真实项目默认使用唯一测试状态。应用继续使用系统 Python，不打包运行时。CI 使用只读权限与固定官方 checkout 提交，不上传原始证据。Docker 用独立临时 runner；真实窗口截图仅测试数据，经人工查看和 SHA-256 白名单后发布。依赖只供测试安装，源码发行包不包含 node_modules、JAR 或系统框架。首版采用 GitHub prerelease 自动生成源码归档，构建安装包/签名/公证留待二进制分发。
 
+0.2.0 准备：scripts/build.sh 的 CFBundleShortVersionString/CFBundleVersion 更新为 0.2.0/2，与 README、CHANGELOG 同步。重新构建并读取生成的 Info.plist、核验签名、文档链接与 Git 索引隐私；正常提交推送后新建 base=main 的 PR，按分支实际差异描述自动观察、接管及状态更新。GitHub PR CI 与既有本机验收分别记录；标签和 Release 发布另行执行。
+
 ## Hooks 文档补充
 
-在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。只改说明，不修改正式登记/退出链或自动安装、信任 hooks。
+在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。此节记录早期 D01 文档任务；用户级采集实现与其正常信任审核另见自动观察章节，不应将 validation/ 实验与当前采集器混用。
 
 ## 项目管理实现
 

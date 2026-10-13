@@ -4,7 +4,7 @@
 
 ## 开发与验证
 
-按 README 构建，使用 scripts/csm 登记长期测试服务。运行 `tests/test_support.py`、`tests/test_endpoints.py` 和 `tests/test_engine.py`；修改服务模型时运行相关真实项目或 Docker 集成，修改界面时重新构建并检查实际窗口。只清理测试自己拥有的资源；停止失败禁止重启。GUI、菜单栏、真实 Codex 退出需要解锁桌面，不能把模拟测试写成真实验收。
+按 README 构建，使用 scripts/csm 登记长期测试服务。运行 `tests/test_support.py`、`tests/test_endpoints.py`、`tests/test_engine.py` 和 `tests/test_projects.py`；采集改动另运行 `tests/test_capture.py`，容器采集需真实 `tests/verify_capture_docker.py`，步骤见 [复现与 CI](docs/TESTING.md)。修改服务模型时运行相关真实项目或 Docker 集成，修改界面时重新构建并检查实际窗口。只清理测试自己拥有的资源；停止失败禁止重启。GUI、菜单栏、真实 Codex 退出需要解锁桌面，不能把模拟测试写成真实验收。
 
 基础 CI 自动运行；Docker 工作流由维护者手动执行。CI 不上传原始日志、数据库、截图或环境文件，不能证明桌面交互与真正 Codex 退出。
 

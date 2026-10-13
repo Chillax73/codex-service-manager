@@ -1,6 +1,8 @@
 # Codex Hooks 使用指南
 
-本项目主要管理 Codex 启动的本机服务。正式链路是项目 AGENTS.md 引导 Codex 调用 scripts/csm，原生观察器处理真正应用退出。这里的 hooks 是可选事件实验；安装它们不会自动登记或停止服务。正常使用入口见 [README](../README.md#接入项目)。
+开发分支新增用户级服务自动观察 hooks，其安装、逐项审核、排障与移除见 [接入说明](INTEGRATION.md#任意本机聊天自动观察)，真实验证见 [自动观察报告](results/GLOBAL_CAPTURE.md)。它们使用 `backend/capture.py`，不需要每个项目安装事件实验。当前只验证已加载配置的新聊天常见路径；旧聊天加载缺口已复现，独立配置探测不重载桌面，新窗口也不等于新聊天，详见 [排障说明](OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
+
+本页以下内容仍只说明 `validation/` 下的早期事件实验。完整控制链路是项目 AGENTS.md 引导 Codex 调用 scripts/csm，原生观察器处理真正应用退出。安装这里的实验 hooks 不会自动登记或停止服务。
 
 ## 准备与安装
 
