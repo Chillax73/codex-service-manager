@@ -82,6 +82,8 @@ ProjectStatus 从完整项目服务快照汇总主状态、运行数量、总数
 
 在独立公开快照中实施，不迁移私有 Git 对象。测试 support 模块统一创建 ignored 工作目录并解析工具；真实项目默认使用唯一测试状态。应用继续使用系统 Python，不打包运行时。CI 使用只读权限与固定官方 checkout 提交，不上传原始证据。Docker 用独立临时 runner；真实窗口截图仅测试数据，经人工查看和 SHA-256 白名单后发布。依赖只供测试安装，源码发行包不包含 node_modules、JAR 或系统框架。首版采用 GitHub prerelease 自动生成源码归档，构建安装包/签名/公证留待二进制分发。
 
+0.2.0 准备：scripts/build.sh 的 CFBundleShortVersionString/CFBundleVersion 更新为 0.2.0/2，与 README、CHANGELOG 同步。重新构建并读取生成的 Info.plist、核验签名、文档链接与 Git 索引隐私；正常提交推送后新建 base=main 的 PR，按分支实际差异描述自动观察、接管及状态更新。GitHub PR CI 与既有本机验收分别记录；标签和 Release 发布另行执行。
+
 ## Hooks 文档补充
 
 在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。此节记录早期 D01 文档任务；用户级采集实现与其正常信任审核另见自动观察章节，不应将 validation/ 实验与当前采集器混用。
