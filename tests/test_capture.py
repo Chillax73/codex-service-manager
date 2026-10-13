@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import socket
 import subprocess
 import sys
@@ -19,7 +20,8 @@ BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE / 'backend'))
 import capture
 import engine
-from support import stop_test_watcher
+import adoption
+from support import stop_test_watcher, tool
 
 
 def free_port():
@@ -75,19 +77,18 @@ class CaptureAcceptance(unittest.TestCase):
             os.killpg(child.pid, signal.SIGTERM)
         child.communicate(timeout=5)
 
-    def test_01_direct_service_project_readonly_and_dedup(self):
+    def test_01_direct_service_project_capabilities_and_dedup(self):
         port = free_port()
         child, _ = self.submit('exec /usr/bin/python3 -m http.server ' + str(port) + ' --bind 127.0.0.1', self.b)
         try:
             item = self.wait_items([port])[0]
-            self.assertEqual(item['management'], 'observed')
+            self.assertEqual(item['management'], 'attached')
             self.assertEqual(engine.project_record(item['project_id'])['cwd'], str(self.b))
             self.assertEqual(item['run']['runtime']['pid'], child.pid)  # shell exec optimisation is covered
-            for action in ('start', 'stop', 'restart', 'force'):
-                with self.assertRaisesRegex(RuntimeError, '尚未接管'):
-                    engine.dispatch({'action': action, 'id': item['id']})
-            self.assertFalse(item['can_stop'] or item['can_start'] or item['can_restart'])
-            result = engine.dispatch({'action': 'batch', 'ids': [item['id']], 'operation': 'stop'})
+            self.assertTrue(item['can_stop'])
+            self.assertFalse(item['can_start'] or item['can_force'])
+            self.assertFalse(item['automatic_end'])
+            result = engine.batch({'ids': [item['id']], 'operation': 'stop'}, 'manual')
             self.assertEqual(result[0]['result'], 'skipped')
             before = item['run']['id']; time.sleep(2)
             self.assertEqual(engine.observe(item['id'])['run']['id'], before)
@@ -161,7 +162,8 @@ class CaptureAcceptance(unittest.TestCase):
             self.assertNotEqual(item['run']['id'], next_item['run']['id'])
             self.assertEqual(len(engine.dispatch({'action': 'history', 'id': item['id']})), 2)
             engine.set_run(next_item['run']['id'], runtime={**next_item['run']['runtime'], 'birth': 'wrong'})
-            self.assertEqual(engine.observe(item['id'])['state'], 'exited')
+            self.assertIn(engine.observe(item['id'])['state'], ('exited', 'unknown'))
+            self.assertFalse(engine.observe(item['id'])['can_stop'])
             self.assertIsNone(second.poll())
         finally:
             self.finish(second)
@@ -216,6 +218,269 @@ class CaptureAcceptance(unittest.TestCase):
         finally:
             if item and engine.matches(item['run']['runtime']['pid'], item['run']['runtime']['birth']):
                 os.kill(item['run']['runtime']['pid'], signal.SIGTERM)
+
+    def wait_restart(self, sid):
+        until = time.time() + 10
+        while time.time() < until:
+            item = engine.observe(sid)
+            if item['can_restart']:
+                return item
+            time.sleep(.2)
+        self.fail('重启配置未关联：' + json.dumps(item, ensure_ascii=False))
+
+    def test_09_ordinary_restart_becomes_supervised_and_deduplicates(self):
+        port = free_port()
+        child, _ = self.submit('/usr/bin/python3 -m http.server ' + str(port) + ' --bind 127.0.0.1')
+        item = self.wait_items([port])[0]
+        try:
+            item = self.wait_restart(item['id'])
+            before = item['run']['id']
+            result = engine.dispatch({'action': 'restart', 'id': item['id']})
+            self.assertEqual(result['id'], item['id'])
+            self.assertNotEqual(result['run']['id'], before)
+            self.assertEqual(result['management'], 'managed')
+            self.assertIn('supervisor_pid', result['run']['runtime'])
+            self.assertTrue(result['automatic_end'])
+            child.communicate(timeout=5)
+            time.sleep(2)
+            self.assertEqual(len(self.wait_items([port])), 1)
+            self.assertEqual(len(engine.dispatch({'action': 'history', 'id': item['id']})), 2)
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.assertTrue(engine.observe(item['id'])['can_start'])
+            engine.dispatch({'action': 'start', 'id': item['id']})
+            self.assertEqual(len(engine.dispatch({'action': 'history', 'id': item['id']})), 3)
+        finally:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.finish(child)
+
+    def test_10_legacy_record_stop_and_explicit_recipe_without_relaunch(self):
+        port = free_port()
+        child, _ = self.submit('nohup /usr/bin/python3 -m http.server ' + str(port) + ' >legacy.log 2>&1 &')
+        child.communicate(timeout=5)
+        item = self.wait_items([port])[0]
+        try:
+            self.assertTrue(item['can_stop'])
+            self.assertFalse(item['can_restart'])
+            before = item['run']['id']
+            result = engine.dispatch({'action': 'configure_observed', 'id': item['id'],
+                                     'argv': ['/usr/bin/python3', '-m', 'http.server', str(port)],
+                                     'env': {'CSM_TEST_SECRET': 'private-fixture-value'}})
+            self.assertEqual(result['run']['id'], before)
+            self.assertTrue(result['can_restart'])
+            self.assertNotIn('private-fixture-value', json.dumps(result))
+            engine.dispatch({'action': 'restart', 'id': item['id']})
+        finally:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+        self.assertTrue(engine.port_free(port))
+
+    def test_11_identity_mismatch_cannot_signal_actual_service(self):
+        port = free_port()
+        child, _ = self.submit('/usr/bin/python3 -m http.server ' + str(port))
+        item = self.wait_items([port])[0]
+        original = item['run']['runtime']
+        try:
+            engine.set_run(item['run']['id'], runtime={**original, 'birth': 'not-this-process'})
+            with self.assertRaises(RuntimeError):
+                engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.assertIsNone(child.poll())
+            self.assertFalse(engine.port_free(port))
+        finally:
+            self.finish(child)
+
+    def test_12_failed_stop_blocks_restart_and_force_targets_owned_tree(self):
+        port = free_port()
+        fixture = self.a / 'stubborn.py'
+        fixture.write_text('import signal,http.server\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\n'
+                           'http.server.HTTPServer(("127.0.0.1",' + str(port) + '),http.server.SimpleHTTPRequestHandler).serve_forever()\n')
+        child, _ = self.submit('/usr/bin/python3 stubborn.py')
+        item = self.wait_items([port])[0]
+        try:
+            engine.dispatch({'action': 'configure_observed', 'id': item['id'], 'argv': ['/usr/bin/python3', str(fixture)]})
+            with self.assertRaisesRegex(RuntimeError, '超时'):
+                engine.dispatch({'action': 'restart', 'id': item['id']})
+            result = engine.observe(item['id'])
+            self.assertEqual(result['state'], 'stop_failed')
+            self.assertTrue(result['can_force'])
+            self.assertEqual(result['run']['id'], item['run']['id'])
+            self.assertEqual(len(engine.dispatch({'action': 'history', 'id': item['id']})), 1)
+            engine.dispatch({'action': 'force', 'id': item['id']})
+            child.communicate(timeout=5)
+            self.assertTrue(engine.port_free(port))
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL); child.communicate(timeout=5)
+
+    def test_13_shared_launcher_is_not_stopped(self):
+        ports = [free_port(), free_port()]
+        fixture = self.a / 'shared.py'
+        fixture.write_text('import subprocess,time,sys\n'
+                          'children=[subprocess.Popen([sys.executable,"-m","http.server",str(p)]) for p in ' + repr(ports) + ']\n'
+                          'time.sleep(90)\n')
+        child, _ = self.submit('/usr/bin/python3 shared.py')
+        items = self.wait_items(ports)
+        try:
+            for item in items:
+                self.assertFalse(item['can_stop'])
+                self.assertIn('多个监听服务', item['capability_reason'])
+                with self.assertRaisesRegex(RuntimeError, '多个监听服务'):
+                    engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.assertIsNone(child.poll())
+            self.assertTrue(all(not engine.port_free(p) for p in ports))
+        finally:
+            self.finish(child)
+
+    def test_14_single_launcher_and_children_stop_without_other_project(self):
+        port, other_port = free_port(), free_port()
+        other = engine.dispatch({'action': 'launch', 'name': 'unrelated-project', 'cwd': str(self.b),
+                                 'argv': ['/usr/bin/python3', '-m', 'http.server', str(other_port)], 'ports': [other_port]})
+        fixture = self.a / 'launcher.py'
+        fixture.write_text('import subprocess,time,sys\n'
+                          'child=subprocess.Popen([sys.executable,"-m","http.server","' + str(port) + '"])\n'
+                          'while True:\n if child.poll() is not None: child=subprocess.Popen([sys.executable,"-m","http.server","' + str(port) + '"])\n time.sleep(.1)\n')
+        child, _ = self.submit('/usr/bin/python3 launcher.py')
+        item = self.wait_items([port])[0]
+        try:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            child.communicate(timeout=5)
+            time.sleep(.5)
+            self.assertTrue(engine.port_free(port))
+            self.assertEqual(engine.observe(other['id'])['run']['id'], other['run']['id'])
+            self.assertFalse(engine.port_free(other_port))
+        finally:
+            self.finish(child)
+            engine.dispatch({'action': 'stop', 'id': other['id']})
+
+    def test_15_recipe_parser_rejects_shells_and_sensitive_parameters(self):
+        for command in ('npm run dev && npm run api', 'TOKEN=secret npm run dev',
+                        'java -jar server.jar --password=hunter2', 'node "$ENTRY"',
+                        '/usr/bin/python3 multiple.py', 'npm run dev >out.log &',
+                        'node main.js # sample-secret', 'mvn spring-boot:run -Dapi_key=abc'):
+            self.assertIsNone(adoption.launch_recipe(command), command)
+        for command in ('npm run dev -- --port 5173', 'npx vite --host 127.0.0.1',
+                        'java -jar "server app.jar"', 'mvn spring-boot:run', 'node main.js'):
+            self.assertIsNotNone(adoption.launch_recipe(command), command)
+
+    def test_16_manual_batch_controls_observed_but_project_end_skips(self):
+        port = free_port()
+        child, _ = self.submit('nohup /usr/bin/python3 -m http.server ' + str(port) + ' >batch.log 2>&1 &')
+        child.communicate(timeout=5)
+        item = self.wait_items([port])[0]
+        try:
+            result = engine.dispatch({'action': 'end_project', 'project_id': item['project_id']})
+            self.assertEqual(next(r for r in result if r['id'] == item['id'])['result'], 'skipped')
+            self.assertFalse(engine.port_free(port))
+            result = engine.dispatch({'action': 'batch', 'ids': [item['id']], 'operation': 'stop'})
+            self.assertEqual(result[0]['result'], 'succeeded')
+        finally:
+            if engine.matches(item['run']['runtime']['pid'], item['run']['runtime']['birth']):
+                os.kill(item['run']['runtime']['pid'], signal.SIGTERM)
+
+    def test_17_npm_vite_ordinary_launch_restart_and_tree_stop(self):
+        port = free_port()
+        cwd = BASE / 'tests/fixtures/frontend'
+        argv = [tool('npm', 'CSM_NPM'), 'run', 'dev', '--', '--port', str(port)]
+        child, _ = self.submit(' '.join(shlex.quote(w) for w in argv), cwd)
+        item = self.wait_items([port], timeout=30)[0]
+        try:
+            self.wait_restart(item['id'])
+            result = engine.dispatch({'action': 'restart', 'id': item['id']})
+            self.assertNotEqual(result['run']['id'], item['run']['id'])
+            child.communicate(timeout=5)
+            self.wait_items([port], timeout=30)
+        finally:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.finish(child)
+        self.assertTrue(engine.port_free(port))
+
+    def test_18_maven_spring_ordinary_launch_restart_and_tree_stop(self):
+        port = free_port()
+        cwd = BASE / 'tests/fixtures/spring'
+        argv = [tool('mvn', 'CSM_MAVEN'), '-o', '-B', '-ntp', 'spring-boot:run',
+                '-Dspring-boot.run.arguments=--server.address=127.0.0.1 --server.port=' + str(port)]
+        child, _ = self.submit(' '.join(shlex.quote(w) for w in argv), cwd)
+        item = self.wait_items([port], timeout=60)[0]
+        try:
+            self.wait_restart(item['id'])
+            result = engine.dispatch({'action': 'restart', 'id': item['id']})
+            self.assertNotEqual(result['run']['id'], item['run']['id'])
+            child.communicate(timeout=10)
+            self.wait_items([port], timeout=60)
+        finally:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.finish(child)
+        self.assertTrue(engine.port_free(port))
+
+    def test_19_exited_listener_with_live_launcher_cannot_start_duplicate(self):
+        port = free_port()
+        fixture = self.a / 'delayed-launcher.py'
+        fixture.write_text('import subprocess,time,sys\n'
+                          'child=subprocess.Popen([sys.executable,"-m","http.server","' + str(port) + '"])\n'
+                          'child.wait()\ntime.sleep(90)\n')
+        child, _ = self.submit('/usr/bin/python3 delayed-launcher.py')
+        item = self.wait_items([port])[0]
+        try:
+            engine.dispatch({'action': 'configure_observed', 'id': item['id'], 'argv': ['/usr/bin/python3', str(fixture)]})
+            until = time.time() + 10
+            while not engine.latest(item['id'])['runtime'].get('launch_members') and time.time() < until:
+                time.sleep(.2)
+            self.assertTrue(engine.latest(item['id'])['runtime'].get('launch_members'))
+            runtime = item['run']['runtime']
+            os.kill(runtime['pid'], signal.SIGTERM)
+            until = time.time() + 5
+            while engine.matches(runtime['pid'], runtime['birth']) and time.time() < until:
+                time.sleep(.1)
+            result = engine.observe(item['id'])
+            self.assertEqual(result['state'], 'unknown')
+            self.assertFalse(result['can_start'] or result['can_restart'])
+            with self.assertRaises(RuntimeError):
+                engine.dispatch({'action': 'start', 'id': item['id']})
+            self.assertIsNone(child.poll())
+        finally:
+            self.finish(child)
+
+    def test_20_rpc_adoption_uses_selected_state_root(self):
+        port = free_port()
+        child, _ = self.submit('/usr/bin/python3 -m http.server ' + str(port) + ' --bind 127.0.0.1')
+        item = self.wait_items([port])[0]
+        def rpc(req):
+            output = subprocess.check_output([sys.executable, str(BASE / 'backend/engine.py'),
+                                              '--root', str(self.root), 'rpc'], input=json.dumps(req).encode())
+            result = json.loads(output)
+            self.assertTrue(result['ok'], result)
+            return result['result']
+        try:
+            self.wait_restart(item['id'])
+            snapshot = rpc({'action': 'snapshot'})
+            selected = next(s for s in snapshot['services'] if s['id'] == item['id'])
+            self.assertTrue(selected['can_stop'] and selected['can_restart'])
+            result = rpc({'action': 'restart', 'id': item['id']})
+            self.assertNotEqual(result['run']['id'], item['run']['id'])
+            self.assertTrue(result['run']['log'].startswith(str(self.root)))
+        finally:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.finish(child)
+
+    def test_21_registered_task_survives_ordinary_listener_stop(self):
+        port = free_port()
+        fixture = self.a / 'registered-sibling.py'
+        fixture.write_text('import subprocess,time,sys\n'
+                          'subprocess.run(' + repr([str(BASE / 'scripts/csm'), '--root', str(self.root),
+                          'launch', '--name', 'registered-sibling', '--task', '--cwd', str(self.a), '--',
+                          '/usr/bin/python3', '-c', 'import time;time.sleep(120)']) + ',check=True)\n'
+                          'subprocess.Popen([sys.executable,"-m","http.server","' + str(port) + '"])\n'
+                          'time.sleep(90)\n')
+        child, _ = self.submit('/usr/bin/python3 registered-sibling.py')
+        item = self.wait_items([port])[0]
+        sibling = next(s for s in engine.snapshot()['services'] if s['name'] == 'registered-sibling')
+        try:
+            engine.dispatch({'action': 'stop', 'id': item['id']})
+            self.assertEqual(engine.observe(sibling['id'])['state'], 'running')
+            self.assertEqual(engine.observe(sibling['id'])['run']['id'], sibling['run']['id'])
+            child.communicate(timeout=5)
+            self.assertTrue(engine.port_free(port))
+        finally:
+            engine.dispatch({'action': 'stop', 'id': sibling['id']})
+            self.finish(child)
 
 
 if __name__ == '__main__':

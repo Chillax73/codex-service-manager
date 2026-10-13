@@ -52,7 +52,7 @@ def main():
     def wait_count(count):
         until = time.time() + 15
         while time.time() < until:
-            items = [s for s in engine.snapshot()['services'] if s['management'] == 'observed' and s['state'] == 'running']
+            items = [s for s in engine.snapshot()['services'] if s['spec'].get('source') == 'global_hook' and s['state'] == 'running']
             if len(items) == count:
                 return items
             time.sleep(.2)
@@ -65,8 +65,8 @@ def main():
         created.append(cid); register_owned(cid)
         items = wait_count(1)
         item = items[0]
-        assert item['spec']['container_id'] == cid and not item['can_stop'] and not item['can_restart']
-        checks.append('单容器工具返回 ID、归属、只读能力')
+        assert item['spec']['container_id'] == cid and item['can_stop'] and item['can_restart'] and not item['automatic_end']
+        checks.append('单容器工具返回 ID、归属、按能力接管且不自动结束')
         first_run = item['run']['id']
         submit('docker restart ' + cid)
         until = time.time() + 10
@@ -74,6 +74,10 @@ def main():
             time.sleep(.2)
         assert engine.observe(item['id'])['run']['id'] != first_run
         checks.append('实际容器重启产生独立运行历史')
+        observed_run = engine.observe(item['id'])['run']['id']
+        controlled = engine.dispatch({'action': 'restart', 'id': item['id']})
+        assert controlled['run']['id'] != observed_run and controlled['management'] == 'managed'
+        checks.append('观察容器经管理器真实重启并升级，沿用容器及服务 ID')
         file = project / 'compose.yaml'
         file.write_text('services:\n  one:\n    image: ' + image + '\n    pull_policy: never\n'
                         '    command: [python, -m, http.server, "8000"]\n    labels: {csm.capture.test: ' + tag + '}\n'

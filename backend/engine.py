@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import datetime
+import errno
 import fcntl
 import hashlib
 import json
@@ -220,14 +221,23 @@ def launch(req):
 
 
 def port_free(port):
-    with socket.socket() as sock:
+    # macOS permits some SO_REUSEADDR wildcard/specific-address combinations;
+    # a successful loopback bind is not evidence that no listener exists.
+    probe = subprocess.run(['/usr/sbin/lsof', '-nP', '-iTCP:' + str(int(port)), '-sTCP:LISTEN', '-t'],
+                           capture_output=True, text=True, timeout=5)
+    if probe.stdout.strip() or probe.returncode not in (0, 1):
+        return False
+    for family, address in ((socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::')):
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(('127.0.0.1', port))
-            sock.listen(1)
-            return True
-        except OSError:
+            with socket.socket(family) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((address, port))
+                sock.listen(1)
+        except OSError as exc:
+            if family == socket.AF_INET6 and exc.errno in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.EADDRNOTAVAIL):
+                continue
             return False
+    return True
 
 
 def start_process(item):
@@ -583,14 +593,21 @@ def operate(service_id, action, trigger='user'):
           [operation, service_id, action, trigger, timestamp()])
     try:
         item = service(service_id)
-        if item['spec'].get('management') == 'observed':
-            raise RuntimeError('自动观察服务尚未接管，不能执行启停或重启')
+        observed = item['spec'].get('management') == 'observed'
+        if observed:
+            capability = observe(service_id)
+            key = {'stop': 'can_stop', 'force': 'can_force', 'start': 'can_start', 'restart': 'can_restart'}.get(action)
+            if not key or not capability.get(key):
+                raise RuntimeError(capability.get('capability_reason') or '观察服务当前不具备此操作能力')
         run = latest(service_id)
         if action == 'restart':
             operate(service_id, 'stop', trigger)
             item = service(service_id)
             result = operate(service_id, 'start', trigger)
         elif action == 'start':
+            if observed:
+                item['spec']['management'] = 'managed'
+                write('UPDATE services SET spec=? WHERE id=?', [json.dumps(item['spec']), service_id])
             if item['kind'] in ('process', 'task'):
                 if run and run['ended'] is None:
                     raise RuntimeError('前一次运行尚未结束，拒绝启动第二个副本')
@@ -598,7 +615,11 @@ def operate(service_id, action, trigger='user'):
             else:
                 result = start_docker(item)
         elif action in ('stop', 'force'):
-            result = stop_process(item, action == 'force') if item['kind'] in ('process', 'task') else stop_docker(item, action == 'force')
+            if observed and item['kind'] in ('process', 'task'):
+                import adoption
+                result = adoption.stop(item, action == 'force')
+            else:
+                result = stop_process(item, action == 'force') if item['kind'] in ('process', 'task') else stop_docker(item, action == 'force')
         else:
             raise ValueError('未知操作')
         write('UPDATE operations SET ended=?,result=? WHERE id=?', [timestamp(), 'succeeded', operation])
@@ -613,6 +634,8 @@ def observe(service_id):
     run = latest(service_id)
     problem = None
     can_stop = False
+    capability_reason = None
+    can_force = False
     observed = item['spec'].get('management') == 'observed'
     if item['kind'] in ('container', 'compose'):
         try:
@@ -626,8 +649,19 @@ def observe(service_id):
         runtime = run['runtime']
         try:
             current = identity(runtime.get('pid'))
-            if current and current['birth'] == runtime.get('birth'):
-                state = 'running'
+            remaining = [m for m in runtime.get('control_members', []) if matches(m['pid'], m['birth'])]
+            launchers = [m for m in runtime.get('launch_members', []) if matches(m['pid'], m['birth'])]
+            if current and current['birth'] == runtime.get('birth') or remaining:
+                state = run['state'] if run['state'] in ('stop_failed', 'stopping') else 'running'
+            elif run['state'] == 'stop_failed':
+                if runtime.get('control_members') and all(port_free(p) for p in item['spec'].get('ports', [])):
+                    state = 'cancelled' if item['kind'] == 'task' else 'stopped'
+                    set_run(run['id'], ended=timestamp(), state=state, error=None)
+                    run = latest(service_id)
+                else:
+                    state, problem = 'stop_failed', run['error']
+            elif launchers:
+                state, problem = 'unknown', '监听进程已退出，但已确认启动器或子进程仍在运行，拒绝启动副本'
             else:
                 state = 'exited'
                 set_run(run['id'], ended=timestamp(), state=state,
@@ -656,10 +690,44 @@ def observe(service_id):
     spec = {k: v for k, v in item['spec'].items() if k != 'env'}
     spec['url'] = url
     spec['env_keys'] = sorted(item['spec'].get('env', {}))
+    can_start = state not in ACTIVE and not observed
+    can_restart = state != 'unknown' and not observed
+    management = 'managed'
+    if observed:
+        management = 'observed'
+        if item['kind'] in ('container', 'compose'):
+            can_start = state not in ACTIVE
+            can_restart = state not in ('unknown', 'starting', 'stopping')
+            can_force = can_stop
+        else:
+            if state in ('running', 'stop_failed'):
+                try:
+                    import adoption
+                    plan = adoption.stop_plan(item)
+                    can_stop = True
+                    can_force = state == 'stop_failed'
+                    if item['spec'].get('recipe_automatic') and not adoption.recipe_matches(item['spec'], plan):
+                        capability_reason = '启动配置与当前启动器不匹配，请补充单项启动配置'
+                    else:
+                        can_restart = bool(item['spec'].get('argv'))
+                except Exception as exc:
+                    can_stop = False
+                    capability_reason = str(exc)
+            can_start = state not in ACTIVE and bool(item['spec'].get('argv'))
+            if state not in ACTIVE:
+                can_restart = can_start
+            if not item['spec'].get('argv'):
+                capability_reason = capability_reason or '缺少单项服务启动配置；可补充配置以启用启动和重启'
+        if can_stop or can_start or can_restart:
+            management = 'attached'
+    else:
+        can_force = state == 'stop_failed' and can_stop
+    spec.pop('recipe_candidate', None)
     return {**item, 'spec': spec, 'run': run, 'state': state, 'health': health_state,
-            'problem': problem or ((run or {}).get('error')), 'can_stop': can_stop and not observed,
-            'can_start': state not in ACTIVE and not observed, 'can_restart': state != 'unknown' and not observed,
-            'management': 'observed' if observed else 'managed', 'can_logs': not observed or item['kind'] in ('container', 'compose')}
+            'problem': problem or ((run or {}).get('error')), 'can_stop': can_stop, 'can_force': can_force,
+            'can_start': can_start, 'can_restart': can_restart, 'capability_reason': capability_reason,
+            'management': management, 'automatic_end': not observed,
+            'can_logs': not observed or item['kind'] in ('container', 'compose')}
 
 
 def project_record(project_id):
@@ -795,7 +863,7 @@ def batch(req, trigger='user'):
         try:
             registered = query('SELECT spec FROM services WHERE id=?', [sid], True)
             spec = json.loads(registered['spec']) if registered else {}
-            if spec.get('management') == 'observed' or spec.get('source') == 'internal':
+            if (spec.get('management') == 'observed' and trigger in ('manual', 'codex_exit')) or spec.get('source') == 'internal':
                 results.append({'id': sid, 'result': 'skipped', 'reason': '自动观察服务或内部采集组件不参与批量控制'})
                 continue
             if trigger in ('manual', 'codex_exit') and service(sid)['keep']:
@@ -895,6 +963,9 @@ def dispatch(req):
             return restore_project(req['id'])
         if action == 'launch':
             return launch(req)
+        if action == 'configure_observed':
+            import adoption
+            return adoption.configure(req)
         if action == 'register_container':
             return register_container(req)
         if action == 'register_compose':
@@ -953,4 +1024,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # RPC/supervisor execution must share this configured ROOT with modules
+    # importing engine; otherwise a second module silently uses DEFAULT_ROOT.
+    sys.modules['engine'] = sys.modules[__name__]
     main()

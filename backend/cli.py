@@ -51,6 +51,11 @@ def main():
     sub.add_parser('list')
     sub.add_parser('discover')
     sub.add_parser('capture-start')
+    configure = sub.add_parser('configure-observed', help='补充观察服务的单项启动配置，不停止或启动服务')
+    configure.add_argument('id')
+    configure.add_argument('--cwd')
+    configure.add_argument('--env', action='append', default=[])
+    configure.add_argument('argv', nargs='+')
     for action in ('start', 'stop', 'restart', 'force', 'history', 'logs'):
         sub.add_parser(action).add_argument('id')
     policy = sub.add_parser('policy')
@@ -85,6 +90,9 @@ def main():
         req['env'] = dict(value.split('=', 1) for value in req['env'])
     if args.action == 'container':
         req['action'] = 'register_container'
+    elif args.action == 'configure-observed':
+        req['action'] = 'configure_observed'
+        req['argv'] = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
     elif args.action == 'compose':
         req['action'] = 'register_compose'
         req['start'] = not args.register_only

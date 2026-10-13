@@ -24,16 +24,18 @@
 
 ## 用户级自动观察
 
-复用 services/runs，不新增表。观察对象的 spec 保存 `management=observed`、`source=global_hook`、cwd、session_id/tool_use_id、association 依据和实际 ports；本机对象的 runtime 保存 pid/birth/ports。容器对象还保存 container_id，运行由实际 Docker 状态核对。启动事件不保存完整 argv、环境或工具输出，不能直接用作重启配置。
+复用 services/runs，不新增表。观察对象的 spec 保存 `management=observed`、`source=global_hook`、cwd、session_id/tool_use_id、association 依据和实际 ports；本机对象的 runtime 保存 pid/birth/ports。容器对象还保存 container_id，运行由实际 Docker 状态核对。启动事件不保存整段工具命令、完整环境或工具输出；常见简单命令可保存经保守解析的 launch_recipe.argv 及 launch_env（仅 PATH/LANG/JAVA_HOME）。实际启动器与单项范围验证后，services.spec 保存 argv/env、recipe_automatic；显式配置保存 recipe_explicit。
 
 进程服务 ID 从启动项目、可执行名称、实际 cwd 和端口集合派生；同一候选有另一活动 PID 时增加 PID 区分。ID 不代表已具备控制能力，也不保证未知复杂脚本重启后能关联同一服务。相同已验证身份更新当前运行；身份变化或旧运行结束后产生新 run。端口/cwd 变化的稳定归并尚无一般保证，不能用它认领无关对象。
 
 项目归属优先保留采集事件的启动 cwd；运行 cwd 可不同，不以共享临时目录替代权威启动项目。容器服务 ID 从完整容器 ID 派生；标签关联仅用于有启动上下文的 Compose 对象，已管理容器/成员去重。容器被重新创建有新 ID，不承诺合并为原观察服务。
 
-快照返回 management、can_start/can_stop/can_restart 与 can_logs；观察对象的三个控制能力为 false，本机 can_logs 为 false，容器日志仍可读取最近日志。进程消失时 ended 为观察时间、exit_code 保持未知，可保存 exit_observation 提示。健康与运行状态继续分离，未配置健康检查不根据端口推断可用。
+快照返回 management（managed/attached/observed）、独立 can_start/can_stop/can_restart/can_force、capability_reason、automatic_end 与 can_logs。原观察运行按可靠身份/单项范围和启动配置分别开放能力；本机 can_logs 仍为 false，容器日志可读取。观察 spec.management 保持 observed，因此原运行不参与结束策略；经管理器启动新运行后改为 managed。进程消失时 ended 为观察时间、exit_code 保持未知，可保存 exit_observation 提示。健康与运行状态继续分离，未配置健康检查不根据端口推断可用。
 
 内部任务 `csm-auto-collector` 使用 `source=internal`，从常规服务列表与仅含内部任务的项目隐藏；批量控制跳过。metadata 的 capture 保存 pid/birth/updated/error/tracked/event_count，快照按身份及 20 秒心跳计算 alive；capture_tracking 保存已确认 PID/出生身份/事件关联，用于采集器恢复。
 
-状态目录的 capture-events/*.json 仅保存白名单事件字段。临时私密目录的 FIFO/ack 传递事件 ID 和实际父 shell PID，shell 检查点不直接读数据库或进程表。新事件按聊天/工具调用标识生成摘要 ID，相同事件幂等。事件文件与跟踪元数据当前没有自动保留期清理；删除数据库不停止组件或业务服务。
+状态目录的 capture-events/*.json 仅保存白名单事件字段。临时私密目录的 FIFO/ack 传递事件 ID、实际父 shell PID 及三个必要环境键，shell 检查点不直接读数据库或进程表。新事件按聊天/工具调用标识生成摘要 ID，相同事件幂等。事件文件与跟踪元数据当前没有自动保留期清理；删除数据库不停止组件或业务服务。
 
 尚未实现的后台发现兜底需要独立来源与归属字段语义，不能伪造 `global_hook` 事件；已退出候选也不能创建虚假的活动运行。后续升级管理能力需单独补齐身份与启动配置，不能由观察 spec 推导完整环境或历史。
+
+接管运行 runtime.launch_members 保存已确认启动器/子进程出生身份，防止监听者退出但启动器存活时启动副本；control_members 保存已发送停止的范围，以支持停止失败后核对剩余对象。不保存 ps 的完整命令参数。控制逐个复核身份，不使用观察进程的共享进程组。新监督运行沿用 service ID、新建 run ID，停止前运行的日志/退出码仍未知。

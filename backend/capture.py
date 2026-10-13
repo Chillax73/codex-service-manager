@@ -68,6 +68,9 @@ def receive_arms(fd, tracked):
                 continue
             if not event.get('armed'):
                 event.update(shell=table[pid], cwd=process_cwd(pid, event['cwd']), armed=time.time())
+                if event.get('launch_recipe'):
+                    event['launch_env'] = {k: str(v) for k, v in request.get('env', {}).items()
+                                           if k in ('PATH', 'LANG', 'JAVA_HOME')}
             hint = event.get('docker_hint')
             if hint and hint['type'] == 'compose':
                 cwd = Path(event['cwd'])
@@ -243,6 +246,10 @@ def hook(payload):
         event = {'id': event_id, 'session_id': payload.get('session_id'),
                  'tool_use_id': payload.get('tool_use_id'), 'cwd': payload.get('cwd'),
                  'created': time.time(), 'docker_hint': docker_hints(command)}
+        import adoption
+        recipe = adoption.launch_recipe(command)
+        if recipe:
+            event['launch_recipe'] = recipe
         save_event(event)
         # Keep the ORIGINAL shell/command text and streams. A final checkpoint
         # captures direct background children before the shell returns; its private
@@ -274,7 +281,8 @@ def hook(payload):
 def arm(event_id, pid):
     if not re.fullmatch(r'[a-f0-9]{32}', event_id):
         raise ValueError('无效启动上下文标识')
-    message = json.dumps({'id': event_id, 'pid': os.getppid()}).encode() + b'\n'
+    message = json.dumps({'id': event_id, 'pid': os.getppid(),
+                          'env': {k: os.environ[k] for k in ('PATH', 'LANG', 'JAVA_HOME') if k in os.environ}}).encode() + b'\n'
     fd = os.open(channel_dir() / 'arm.fifo', os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     try:
         os.write(fd, message)
@@ -433,6 +441,29 @@ def collect_once(tracked, first_seen):
     # Persist verified descendants so collector recovery can follow reparented services.
     saved = {str(pid): value for pid, value in tracked.items()}
     engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture_tracking', json.dumps(saved)])
+    # A recipe is attached only after the actual single-service launcher and all
+    # descendants are known. Existing explicit configurations are preserved.
+    import adoption
+    for row in engine.query('SELECT id FROM services WHERE spec LIKE ?', ['%"management": "observed"%']):
+        item = engine.service(row['id'])
+        run = engine.latest(item['id'])
+        if item['kind'] not in ('process', 'task') or not run or run['ended'] is not None or run['state'] != 'running':
+            continue
+        info = tracked.get(run['runtime'].get('pid')) or {}
+        event = by_id.get(info.get('event'), {})
+        if run['runtime'].get('launch_members') and (item['spec'].get('argv') or not event.get('launch_recipe')):
+            continue
+        try:
+            with engine.mutation_lock():
+                # Re-read under the same lock used by start/configure.
+                item = engine.service(row['id'])
+                if item['spec'].get('management') == 'observed':
+                    plan = adoption.stop_plan(item, table, saved, ports)
+                    adoption.remember_scope(item, plan)
+                    if not item['spec'].get('argv'):
+                        adoption.remember_recipe(item, plan, event)
+        except (RuntimeError, ValueError):
+            pass
     first_seen = {key: value for key, value in first_seen.items() if key[0] in tracked}
     try:
         collect_containers(events)

@@ -20,7 +20,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_capture_docker.py
 ```
 
-进程入口使用独立临时状态，启动真实采集器及测试进程，需要本机进程/端口权限。容器入口使用唯一测试标签并比较测试前后原有容器身份/状态；只删除测试拥有的对象。两者调用显式模拟 hook 输入，分别保留 capture-tests.json（8 组）和 capture-docker-tests.json（6 项断言），不能当作桌面工具回调验收。当前通用 CI 尚未运行这两个新入口；Docker 采集实现依赖本机 macOS 的 ps/lsof，不能直接加入现有 Linux Docker job。
+进程入口使用独立临时状态，启动真实采集器及测试进程，需要本机进程/端口权限。现含 21 组：原有采集、普通接管/配置、Vite、离线 Maven/Spring、多服务/已登记任务隔离、身份/超时/防副本及独立 RPC 状态目录。容器入口使用唯一测试标签、已有镜像，比较原有容器状态，现含 7 项检查。hook 输入为显式模拟，不能当作真实桌面回调。原生 UI 的实际操作及独立进程核验见 adoption-ui-tests.json，综合结果见 [普通启动接管](results/ORDINARY_ADOPTION.md)。当前通用 CI 尚未运行这两个入口；macOS ps/lsof 采集不能直接加入 Linux Docker job。
 
 真实桌面验收另行进行：正常安装并逐项审核两个 User config handler，在用户授权的新聊天里让 Codex 运行 `tests/desktop_capture_fixture.py --seconds 120`。夹具直接产生两个 HTTP 服务和一个持续任务，测试的是原始 shell 启动采集，不经 csm launch；普通开发长期服务仍遵循项目配套入口。说明自动附加 arm 检查点及本机元数据副作用，正常申请测试端口/进程权限。夹具清理自己的子进程；核对实际事件、项目、原生窗口运行数量、观察标识和禁用控制，不把手动终端执行当作工具事件。
 

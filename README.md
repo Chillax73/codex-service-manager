@@ -44,7 +44,7 @@ open "build/Codex Service Manager.app"
 
 在 Codex CLI 的 `/hooks` 中逐项审核本工具的 `PreToolUse`、`PostToolUse`，确认来源为 User config、命令指向 `backend/capture.py hook`。开始新聊天加载配置，无需逐项目修改 AGENTS.md。可用 `/usr/bin/python3 scripts/check_capture_hooks.py /项目目录` 检查来源及 trusted/enabled，再实际启动服务验证。
 
-独立采集组件自动启动，界面标明“自动观察”；这些对象可看状态和历史，暂不参与启停、重启或结束策略。无端口持续任务约 30 秒后显示。本机进程原输出未被接管，不提供历史日志或已知退出码。直接 Docker/Compose 启动有身份/标签证据时自动显示。
+独立采集组件自动启动，已关联服务按能力开放控制：可靠的单项进程树可停止，常见简单启动命令自动保存必要配置后可重启；历史服务可在详情“配置启动方式…”补齐单项命令。观察中的原运行不参与结束策略，经管理器再次启动后升级为已管理。无端口持续任务约 30 秒后显示，原本未采集的输出和退出码无法补回。直接 Docker/Compose 有身份/标签证据时可按能力控制。验证及范围见 [普通启动接管](docs/results/ORDINARY_ADOPTION.md)。
 
 当前不补录启用前的既有服务，不覆盖远端或不触发 shell hooks 的路径；采样前已完全脱离进程树的特殊启动脚本、脚本内部未捕获身份的 Docker 操作仍可能漏记。旧聊天配置加载缺口已复现，新开窗口继续同一聊天未解决；当前没有已验收的热加载操作。覆盖与真实桌面验收见 [自动观察报告](docs/results/GLOBAL_CAPTURE.md)，启用/移除见 [接入说明](docs/INTEGRATION.md)。该功能尚未包含在 v0.1.0 标签。
 
@@ -54,7 +54,7 @@ open "build/Codex Service Manager.app"
 
 当前可用路径是新建聊天验证真实采集，或通过下方配套入口获得完整控制；不要为了登记而重复启动已经运行的业务服务。管理器没有对启用前对象做后台补录，原生发现页也不是自动登记。检查实际 PID/出生身份、端口或 Docker 状态；聊天声称启动完成不能代替现场运行状态。详细步骤见 [排障说明](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
 
-“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、复杂脚本控制/重启；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](specs/001-service-manager/tasks.md)。
+普通启动的可靠停止、常见命令/显式配置重启已交付。“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、任意复杂包装自动拆分；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](specs/001-service-manager/tasks.md)。
 
 ## 接入项目（完整控制）
 

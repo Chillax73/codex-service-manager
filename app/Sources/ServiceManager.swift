@@ -136,7 +136,14 @@ struct ServiceItem: Identifiable {
     var canStop: Bool { raw["can_stop"] as? Bool ?? false }
     var canStart: Bool { raw["can_start"] as? Bool ?? false }
     var canRestart: Bool { raw["can_restart"] as? Bool ?? false }
-    var observed: Bool { raw["management"] as? String == "observed" }
+    var canForce: Bool { raw["can_force"] as? Bool ?? false }
+    var observed: Bool { spec["management"] as? String == "observed" }
+    var capabilityReason: String? { raw["capability_reason"] as? String }
+    var managementSummary: String {
+        if !observed { return "已接管 · 支持启停和重启" }
+        if canRestart || canStart { return "已关联 · 支持启停和重启" }
+        return canStop ? "已关联 · 可停止，待补充启动配置" : "自动观察 · 暂不可控制"
+    }
     var running: Bool { ["running", "stop_failed", "stopping"].contains(state) }
     var keep: Bool { (raw["keep"] as? NSNumber)?.boolValue ?? false }
     var spec: [String: Any] { raw["spec"] as? [String: Any] ?? [:] }
@@ -145,7 +152,7 @@ struct ServiceItem: Identifiable {
     var runtimeIdentity: String {
         if let ids = runtime["container_ids"] as? [String], !ids.isEmpty { return ids.joined(separator:"\n") }
         if let pid = runtime["child_pid"] as? Int { return "PID \(pid) · 监督 PID \(runtime["supervisor_pid"] as? Int ?? 0)" }
-        if let pid = runtime["pid"] as? Int { return "PID \(pid) · 自动观察" }
+        if let pid = runtime["pid"] as? Int { return "PID \(pid) · 已关联的原运行" }
         return "尚无已确认的运行对象"
     }
     var portSummary: String {
@@ -333,6 +340,7 @@ struct MainView: View {
     @State private var settings = false
     @State private var tab = "details"
     @State private var forceItem: ServiceItem?
+    @State private var configuringService: ServiceItem?
     @State private var renamingProject: ProjectItem?
     @State private var deletingProject: ProjectItem?
     var body: some View {
@@ -422,20 +430,24 @@ struct MainView: View {
                     HStack {
                         Button(item.kind == "task" ? "重新执行" : (item.canStart ? "启动" : "重启")) { store.action(item.canStart ? "start" : "restart", item) }.disabled(store.busy || (!item.canStart && !item.canRestart))
                         Button(item.kind == "task" ? "取消" : "停止") { store.action("stop", item) }.disabled(store.busy || !item.canStop)
-                        if item.state == "stop_failed" { Button("强制停止") { forceItem = item }.disabled(store.busy) }
+                        if item.state == "stop_failed" { Button("强制停止") { forceItem = item }.disabled(store.busy || !item.canForce) }
+                        if item.observed && ["process", "task"].contains(item.kind) {
+                            Button("配置启动方式…") { configuringService = item }.disabled(store.busy)
+                        }
                         if let url = item.url, let address = URL(string:url) {
                             Button { NSWorkspace.shared.open(address) } label: { Image(systemName:"arrow.up.right.square") }.help("打开地址")
                             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url,forType:.string) } label: { Image(systemName:"doc.on.doc") }.help("复制地址")
                         }
                     }
                     if let problem = item.problem { Text(problem).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-                    if item.observed { Text("自动观察：可查看状态与历史。尚未接管，不参与启停、重启或项目结束策略。").font(.caption).foregroundStyle(.secondary) }
+                    if let reason = item.capabilityReason { Text(reason).font(.caption).foregroundStyle(.secondary) }
+                    if item.observed { Text("原运行不参与项目结束策略。通过管理器再次启动后，将按项目策略管理；此前输出和退出码无法补回。").font(.caption).foregroundStyle(.secondary) }
                     Picker("详情",selection:$tab) { Text("配置").tag("details"); Text("日志").tag("logs"); Text("历史").tag("history"); Text("操作").tag("operations") }.pickerStyle(.segmented).labelsHidden()
                     ScrollView {
                         VStack(alignment:.leading,spacing:14) {
                             if tab == "details" {
                                 field("类型",item.typeName)
-                                field("管理能力",item.observed ? "自动观察 · 尚未接管" : "已接管")
+                                field("管理能力",item.managementSummary)
                                 if item.observed { field("归属依据",item.spec["association"] as? String ?? "—") }
                                 field("工作目录",item.spec["cwd"] as? String ?? "—")
                                 field("运行对象",item.runtimeIdentity)
@@ -447,9 +459,9 @@ struct MainView: View {
                                 if let group = item.groupID {
                                     Divider(); Text("Compose 服务组").font(.headline)
                                     HStack {
-                                        Button("停止整组") { store.perform(["action":"batch","group_id":group,"operation":"stop"]) }
-                                        Button("重启整组") { store.perform(["action":"batch","group_id":group,"operation":"restart"]) }
-                                    }.disabled(store.busy || item.observed)
+                                        Button("停止整组") { store.perform(["action":"batch","group_id":group,"operation":"stop"]) }.disabled(store.busy || !item.canStop)
+                                        Button("重启整组") { store.perform(["action":"batch","group_id":group,"operation":"restart"]) }.disabled(store.busy || !item.canRestart)
+                                    }
                                 }
                                 if let project = store.projects.first(where:{$0.id == item.projectID}) {
                                     Divider(); Text("项目结束策略 · " + project.name).font(.headline)
@@ -502,11 +514,12 @@ struct MainView: View {
         }
         .sheet(item:$renamingProject) { RenameProjectView(project:$0,store:store) }
         .sheet(item:$deletingProject) { DeleteProjectView(project:$0,store:store) }
+        .sheet(item:$configuringService) { ObservedConfigView(item:$0,store:store) }
         .sheet(isPresented:$adding) { AddView(store:store) }
         .sheet(isPresented:$discovering) { DiscoveryView(store:store) }
         .sheet(isPresented:$settings) { SettingsView(store:store) }
         .alert("操作未完成",isPresented:Binding(get:{store.error != nil},set:{if !$0 {store.error = nil}})) { Button("知道了",role:.cancel) {store.error = nil} } message: {Text(store.error ?? "")}
-        .confirmationDialog("强制停止会立即终止该服务进程组",isPresented:Binding(get:{forceItem != nil},set:{if !$0 {forceItem = nil}}),titleVisibility:.visible) {
+        .confirmationDialog("强制停止会立即终止已确认属于该服务的进程",isPresented:Binding(get:{forceItem != nil},set:{if !$0 {forceItem = nil}}),titleVisibility:.visible) {
             Button("强制停止",role:.destructive) { if let item = forceItem { store.action("force",item) }; forceItem = nil }
             Button("取消",role:.cancel) {forceItem = nil}
         }
@@ -669,6 +682,46 @@ struct AddView: View {
                 store.perform(req,completion:{_ in dismiss()})
             }.buttonStyle(.borderedProminent).disabled(store.busy || (kind != "compose" && name.isEmpty)) }
         }.padding(26).frame(width:590)
+    }
+}
+struct ObservedConfigView: View {
+    let item: ServiceItem
+    @ObservedObject var store: Store
+    @Environment(\.dismiss) var dismiss
+    @State private var command = ""
+    @State private var cwd = ""
+    @State private var envText = ""
+    @State private var inputError = ""
+    var body: some View {
+        VStack(alignment:.leading,spacing:18) {
+            Text("配置启动方式 · " + item.name).font(.title2.weight(.semibold))
+            Text("填写仅启动这一项服务的命令。保存不会停止或启动服务；重启会先停止旧运行，再创建新的运行记录。多服务脚本请拆成单项命令。").font(.caption).foregroundStyle(.secondary)
+            Form {
+                TextField("工作目录",text:$cwd)
+                TextField("命令与参数",text:$command)
+                VStack(alignment:.leading) {
+                    Text("必要环境覆盖（每行 KEY=VALUE；已有值保留）").font(.caption)
+                    TextEditor(text:$envText).font(.system(.caption,design:.monospaced)).frame(height:80)
+                }
+            }
+            if !inputError.isEmpty { Text(inputError).font(.caption).foregroundStyle(.orange) }
+            HStack {
+                Spacer(); Button("取消") { dismiss() }
+                Button("保存启动配置") {
+                    var env: [String:String] = [:]
+                    for line in envText.split(separator:"\n") where !line.trimmingCharacters(in:.whitespaces).isEmpty {
+                        let parts = line.split(separator:"=",maxSplits:1,omittingEmptySubsequences:false)
+                        guard parts.count == 2, !parts[0].isEmpty else { inputError = "环境配置需要 KEY=VALUE 格式"; return }
+                        env[String(parts[0])] = String(parts[1])
+                    }
+                    store.perform(["action":"configure_observed","id":item.id,"cwd":cwd,"command":command,"env":env],completion:{ _ in dismiss() })
+                }.buttonStyle(.borderedProminent).disabled(store.busy || command.trimmingCharacters(in:.whitespaces).isEmpty || cwd.isEmpty)
+            }
+        }.padding(26).frame(width:610)
+        .onAppear {
+            cwd = item.spec["cwd"] as? String ?? ""
+            command = (item.spec["argv"] as? [String] ?? []).map { "'" + $0.replacingOccurrences(of:"'",with:"'\"'\"'") + "'" }.joined(separator:" ")
+        }
     }
 }
 struct DiscoveryView: View {
