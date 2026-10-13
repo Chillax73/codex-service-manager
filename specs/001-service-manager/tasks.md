@@ -6,7 +6,9 @@
 - [x] R02 重新构建、Info.plist 版本和签名核验、文档链接及 Git 索引隐私检查。
 - [x] R03 提交并推送版本更新，创建到 main 的 PR 并核对 refs 与 CI。
 
-R01–R03：0.2.0/2 构建与产物核验通过，版本提交已推送；[PR #2](https://github.com/Chillax73/codex-service-manager/pull/2) 已创建，base=main、head=f_wqx_project-management，开放且可合并。PR CI 独立运行，实际结果以 PR 检查记录为准；本步骤没有合并或创建版本标签/Release。
+R01–R03：0.2.0/2 构建与产物核验通过，版本提交已推送；[PR #2](https://github.com/Chillax73/codex-service-manager/pull/2) 经用户授权已合并到 main。最新 PR CI 和 [合并提交的 main CI](https://github.com/Chillax73/codex-service-manager/actions/runs/38407958306) 均通过。
+
+- [x] R04 用户授权源码预览发布，同步 README/CHANGELOG、规格与发布流程，核对 0.2.0/2、文档链接及索引隐私；注解标签与 Release 的交付以实际远端结果为准。
 
 ## 状态辨识（2026-10-13）
 

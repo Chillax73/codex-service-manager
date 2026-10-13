@@ -84,7 +84,11 @@ S04–S05：构建及签名校验通过。真实原生 Picker 展示十一种状
 
 用户确认版本 0.2.0；重新构建成功，生成 Info.plist 实际读取 CFBundleShortVersionString=0.2.0、CFBundleVersion=2，签名严格校验通过。README/CHANGELOG 同步发布准备身份，98 个本地文档链接和差异格式通过，提交前检查 Git 索引隐私。不修改 v0.1.0 标签，不宣称已发布 0.2.0 Release；PR refs 与 CI 结果另记录。
 
-[PR #2](https://github.com/Chillax73/codex-service-manager/pull/2) 已创建并附着当前任务，实际 GitHub 元数据核对为 OPEN、非草稿、base=main、head=f_wqx_project-management、MERGEABLE。GitHub CI 在 PR 上运行 macOS 14/15 与依赖检查；结果以 PR 实际检查为准，不将本机构建等同 CI。PR 创建不代表合并，标签和 Release 仍未发布。
+[PR #2](https://github.com/Chillax73/codex-service-manager/pull/2) 已附着当前任务，base=main、head=f_wqx_project-management；创建时为 OPEN、非草稿且 MERGEABLE，后续经用户授权合并。最新 PR 的 macOS 14/15 与依赖检查均通过，合并提交 8dbb2e5 的 [main CI](https://github.com/Chillax73/codex-service-manager/actions/runs/38407958306) 也通过，不将本机构建等同 CI。
+
+## R04 · v0.2.0 源码发布
+
+用户明确授权发布标签与 Release；README/CHANGELOG 同步源码开发者预览形式。发布采用 main 经 CI 的提交、注解标签、noreply tagger 和 GitHub prerelease，仅使用自动源码归档，不上传本机应用或原始验收数据。版本保持 0.2.0/2，v0.1.0 不改写；实际交付页为 [v0.2.0](https://github.com/Chillax73/codex-service-manager/releases/tag/v0.2.0)，发布后核对标签提交、非草稿/预览属性和附件为空。
 
 ## D02 · 本轮文档同步
 

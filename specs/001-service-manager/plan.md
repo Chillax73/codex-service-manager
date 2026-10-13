@@ -84,6 +84,8 @@ ProjectStatus 从完整项目服务快照汇总主状态、运行数量、总数
 
 0.2.0 准备：scripts/build.sh 的 CFBundleShortVersionString/CFBundleVersion 更新为 0.2.0/2，与 README、CHANGELOG 同步。重新构建并读取生成的 Info.plist、核验签名、文档链接与 Git 索引隐私；正常提交推送后新建 base=main 的 PR，按分支实际差异描述自动观察、接管及状态更新。GitHub PR CI 与既有本机验收分别记录；标签和 Release 发布另行执行。
 
+用户授权发布后，从已合并 main 同步发布文档，核对版本、索引隐私和 main CI。通过后创建 v0.2.0 注解标签（noreply tagger），仅推送该标签；gh release 使用 --verify-tag 和 --prerelease，正文说明变更、安装、实测及缺口。核对远端标签解析提交、Release 非草稿/预览属性、源码归档链接和附件为空。
+
 ## Hooks 文档补充
 
 在 README 展示职责表和最短 hooks 实验流程，docs/HOOKS.md 说明配置文件、既有配置冲突、事件文件、隐私、桌面验证边界、排障和移除；validation/README.md 链接新版入口并保留原型历史。此节记录早期 D01 文档任务；用户级采集实现与其正常信任审核另见自动观察章节，不应将 validation/ 实验与当前采集器混用。
