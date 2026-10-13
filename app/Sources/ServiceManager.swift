@@ -416,6 +416,43 @@ struct ProjectRow: View, Equatable {
     }
 }
 
+private struct RemoveAutomaticSidebarToggle: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.toolbar(removing: .sidebarToggle)
+        } else {
+            content
+        }
+    }
+}
+
+private struct SidebarToggleToolbar: ViewModifier {
+    @Binding var columnVisibility: NavigationSplitViewVisibility
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.toolbar {
+                // Keep the toggle on the window toolbar even when the sidebar is hidden.
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        withAnimation {
+                            columnVisibility = columnVisibility == .all ? .doubleColumn : .all
+                        }
+                    } label: {
+                        Label("切换项目侧栏", systemImage: "sidebar.left")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(columnVisibility == .all ? "收起项目侧栏" : "展开项目侧栏")
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 struct MainView: View {
     @ObservedObject var store: Store
     @State private var adding = false
@@ -423,11 +460,12 @@ struct MainView: View {
     @State private var settings = false
     @State private var tab = "details"
     @State private var forceItem: ServiceItem?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var configuringService: ServiceItem?
     @State private var renamingProject: ProjectItem?
     @State private var deletingProject: ProjectItem?
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: $store.selectedProject) {
                 Label("全部项目", systemImage:"square.grid.2x2").tag("all")
                 Section("项目") {
@@ -438,6 +476,7 @@ struct MainView: View {
                     }
                 }
             }.navigationTitle("项目").navigationSplitViewColumnWidth(min:210, ideal:240)
+                .modifier(RemoveAutomaticSidebarToggle())
         } content: {
             VStack(spacing:0) {
                 HStack {
@@ -600,6 +639,7 @@ struct MainView: View {
                 VStack(spacing:10) { Image(systemName:"sidebar.right").font(.largeTitle).foregroundStyle(.secondary); Text("选择服务查看详情").foregroundStyle(.secondary) }.frame(maxWidth:.infinity,maxHeight:.infinity)
             }
         }
+        .modifier(SidebarToggleToolbar(columnVisibility: $columnVisibility))
         .frame(minWidth:1000,minHeight:620)
         .onChange(of:store.selectedService) { _ in store.logRunID = nil; store.logs = ""; store.history = []; store.loadDetails() }
         .onChange(of:store.selectedProject) { scope in
