@@ -3,396 +3,6 @@ import SwiftUI
 import Foundation
 import Darwin
 
-func argument(_ name: String) -> String? {
-    guard let index = CommandLine.arguments.firstIndex(of: name), index + 1 < CommandLine.arguments.count else { return nil }
-    return CommandLine.arguments[index + 1]
-}
-let statePath = argument("--root") ?? ProcessInfo.processInfo.environment["CSM_STATE_DIR"] ??
-    NSHomeDirectory() + "/Library/Application Support/Codex Service Manager"
-let enginePath = argument("--engine") ?? Bundle.main.resourcePath! + "/backend/engine.py"
-
-func rpc(_ request: [String: Any]) throws -> Any {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-    process.arguments = [enginePath, "--root", statePath, "rpc"]
-    process.environment = ProcessInfo.processInfo.environment.merging(["PYTHONDONTWRITEBYTECODE": "1"]) { _, new in new }
-    let input = Pipe(), output = Pipe(), errors = Pipe()
-    process.standardInput = input; process.standardOutput = output; process.standardError = errors
-    try process.run()
-    try input.fileHandleForWriting.write(contentsOf: JSONSerialization.data(withJSONObject: request))
-    try input.fileHandleForWriting.close()
-    let data = output.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        throw NSError(domain: "CSM", code: 1, userInfo: [NSLocalizedDescriptionKey: "管理组件返回了无效数据"])
-    }
-    guard result["ok"] as? Bool == true else {
-        throw NSError(domain: "CSM", code: 1, userInfo: [NSLocalizedDescriptionKey: result["error"] as? String ?? "操作失败"])
-    }
-    return result["result"] ?? NSNull()
-}
-
-final class ExitWatcher {
-    var targetBundles = ["com.openai.codex"]
-    var instances: Set<pid_t> = []
-    var tokens: [NSObjectProtocol] = []
-    var timer: Timer?
-    let work = DispatchQueue(label: "csm.exit-watcher")
-    var lockFD: Int32 = -1
-    var lastEvent = "观察器启动"
-    var lastError = ""
-
-    func start() {
-        try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        lockFD = open(statePath + "/watcher.lock", O_CREAT | O_RDWR, 0o600)
-        guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: statePath + "/watcher-config.json")),
-           let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let bundles = config["bundle_ids"] as? [String], !bundles.isEmpty { targetBundles = bundles }
-        instances = Set(NSWorkspace.shared.runningApplications.filter { targetBundles.contains($0.bundleIdentifier ?? "") }.map(\.processIdentifier))
-        let center = NSWorkspace.shared.notificationCenter
-        tokens.append(center.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] event in
-            guard let self = self, let app = event.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  self.targetBundles.contains(app.bundleIdentifier ?? "") else { return }
-            self.instances.insert(app.processIdentifier)
-            self.lastEvent = "目标应用启动"
-            self.heartbeat()
-        })
-        tokens.append(center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] event in
-            guard let self = self, let app = event.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  self.targetBundles.contains(app.bundleIdentifier ?? "") else { return }
-            let wasKnown = self.instances.contains(app.processIdentifier)
-            self.instances.remove(app.processIdentifier)
-            let live = NSWorkspace.shared.runningApplications.filter {
-                self.targetBundles.contains($0.bundleIdentifier ?? "") && !$0.isTerminated && $0.processIdentifier != app.processIdentifier
-            }
-            self.instances.formUnion(live.map(\.processIdentifier))
-            guard wasKnown, self.instances.isEmpty else { self.heartbeat(); return }
-            self.lastEvent = "最后一个目标应用实例已终止"
-            self.work.async {
-                var failure: String? = nil
-                // Mutating UI/launch requests can hold the lock. Retry this explicit lifecycle event.
-                for _ in 0..<60 {
-                    do { _ = try rpc(["action": "codex_exit"]); failure = nil; break }
-                    catch {
-                        failure = error.localizedDescription
-                        if !error.localizedDescription.contains("另一个操作") { break }
-                        Thread.sleep(forTimeInterval: 1)
-                    }
-                }
-                DispatchQueue.main.async { self.lastError = failure ?? ""; self.heartbeat() }
-            }
-            self.heartbeat()
-        })
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.heartbeat() }
-        heartbeat()
-        RunLoop.main.run()
-    }
-    func heartbeat() {
-        let bundles = targetBundles, pids = instances.map(Int.init), event = lastEvent, error = lastError
-        work.async {
-            let ps = Process(); let pipe = Pipe()
-            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-            ps.arguments = ["-p", String(getpid()), "-o", "lstart="]
-            ps.standardOutput = pipe
-            try? ps.run()
-            let birth = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") ?? ""
-            ps.waitUntilExit()
-            _ = try? rpc(["action": "watcher_event", "watcher": ["pid": Int(getpid()), "birth": birth,
-                "bundle_ids": bundles, "instances": pids, "updated": Date().timeIntervalSince1970,
-                "last_event": event, "error": error]])
-        }
-    }
-}
-
-struct ProjectItem: Identifiable, Equatable {
-    let id: String, name: String, cwd: String
-    let manual: Bool, codexExit: Bool
-    init(_ data: [String: Any]) {
-        id = data["id"] as? String ?? ""; name = data["name"] as? String ?? ""
-        cwd = data["cwd"] as? String ?? ""
-        manual = (data["manual"] as? NSNumber)?.boolValue ?? true
-        codexExit = (data["codex_exit"] as? NSNumber)?.boolValue ?? false
-    }
-}
-struct DeletedProjectItem: Identifiable {
-    let id: String, name: String, cwd: String
-    let deletedAt: Double
-    init(_ data: [String: Any]) {
-        id = data["id"] as? String ?? ""; name = data["name"] as? String ?? ""; cwd = data["cwd"] as? String ?? ""
-        deletedAt = data["deleted_at"] as? Double ?? 0
-    }
-}
-struct ServiceItem: Identifiable {
-    let raw: [String: Any]
-    var id: String { raw["id"] as? String ?? "" }
-    var name: String { raw["name"] as? String ?? "" }
-    var projectID: String { raw["project_id"] as? String ?? "" }
-    var kind: String { raw["kind"] as? String ?? "" }
-    var groupID: String? { raw["group_id"] as? String }
-    var state: String { raw["state"] as? String ?? "unknown" }
-    var health: String { raw["health"] as? String ?? "not_configured" }
-    var problem: String? { raw["problem"] as? String }
-    var canStop: Bool { raw["can_stop"] as? Bool ?? false }
-    var canStart: Bool { raw["can_start"] as? Bool ?? false }
-    var canRestart: Bool { raw["can_restart"] as? Bool ?? false }
-    var canForce: Bool { raw["can_force"] as? Bool ?? false }
-    var observed: Bool { spec["management"] as? String == "observed" }
-    var capabilityReason: String? { raw["capability_reason"] as? String }
-    var managementSummary: String {
-        if !observed { return "已接管 · 支持启停和重启" }
-        if canRestart || canStart { return "已关联 · 支持启停和重启" }
-        return canStop ? "已关联 · 可停止，待补充启动配置" : "自动观察 · 暂不可控制"
-    }
-    var running: Bool { ["running", "stop_failed", "stopping"].contains(state) }
-    var keep: Bool { (raw["keep"] as? NSNumber)?.boolValue ?? false }
-    var spec: [String: Any] { raw["spec"] as? [String: Any] ?? [:] }
-    var run: [String: Any] { raw["run"] as? [String: Any] ?? [:] }
-    var runtime: [String: Any] { run["runtime"] as? [String: Any] ?? [:] }
-    var runtimeIdentity: String {
-        if let ids = runtime["container_ids"] as? [String], !ids.isEmpty { return ids.joined(separator:"\n") }
-        if let pid = runtime["child_pid"] as? Int { return "PID \(pid) · 监督 PID \(runtime["supervisor_pid"] as? Int ?? 0)" }
-        if let pid = runtime["pid"] as? Int { return "PID \(pid) · 已关联的原运行" }
-        return "尚无已确认的运行对象"
-    }
-    var portSummary: String {
-        if let ports = runtime["ports"] as? [[String: Any]] {
-            let bindings = ports.flatMap { mapping -> [String] in
-                mapping.keys.sorted().flatMap { port -> [String] in
-                    guard let published = mapping[port] as? [[String:String]] else { return [port + "（未发布到本机）"] }
-                    return published.map { ($0["HostIp"] ?? "") + ":" + ($0["HostPort"] ?? "") + " → " + port }
-                }
-            }
-            return bindings.isEmpty ? "未发布端口" : bindings.joined(separator:"\n")
-        }
-        let ports = spec["ports"] as? [Int] ?? []
-        return ports.isEmpty ? "未配置" : ports.map(String.init).joined(separator:", ") + (observed ? "（实际监听）" : "（启动配置）")
-    }
-    var url: String? { spec["url"] as? String }
-    var icon: String { ["process": "terminal", "task": "checklist", "container": "shippingbox", "compose": "square.stack.3d.up"][kind] ?? "terminal" }
-    var typeName: String { ["process": "本机服务", "task": "后台任务", "container": "Docker 容器", "compose": "Compose 成员"][kind] ?? kind }
-}
-func stateLabel(_ value: String) -> String {
-    ["starting":"启动中", "running":"运行中", "stopping":"停止中", "stopped":"已停止", "failed":"失败",
-     "unknown":"未知", "stop_failed":"停止失败", "exited":"已退出", "succeeded":"成功", "cancelled":"已取消",
-     "never_started":"未运行", "available":"可用", "unavailable":"不可用", "not_configured":"未配置检查", "checking":"检查中"][value] ?? value
-}
-struct StatusAppearance {
-    let color: NSColor
-    let symbol: String
-
-    init(_ state: String) {
-        switch state {
-        case "running": color = .systemGreen; symbol = "play.circle.fill"
-        case "succeeded", "available": color = .systemGreen; symbol = "checkmark.circle.fill"
-        case "stopped", "exited": color = .systemRed; symbol = "stop.circle.fill"
-        case "failed", "stop_failed", "unavailable": color = .systemRed; symbol = "exclamationmark.circle.fill"
-        case "starting", "stopping", "checking": color = .systemOrange; symbol = "clock.fill"
-        case "unknown": color = .systemOrange; symbol = "questionmark.circle.fill"
-        case "attention": color = .systemOrange; symbol = "exclamationmark.triangle.fill"
-        case "cancelled": color = .secondaryLabelColor; symbol = "xmark.circle.fill"
-        case "never_started", "not_configured": color = .secondaryLabelColor; symbol = "minus.circle.fill"
-        default: color = .systemOrange; symbol = "questionmark.circle.fill"
-        }
-    }
-
-    var menuImage: NSImage? {
-        guard let source = NSImage(systemSymbolName:symbol, accessibilityDescription:nil) else { return nil }
-        let image = NSImage(size:NSSize(width:14,height:14), flipped:false) { rect in
-            source.draw(in:rect)
-            color.setFill()
-            rect.fill(using:.sourceIn)
-            return true
-        }
-        image.isTemplate = false
-        return image
-    }
-}
-
-struct StatusBadge: View {
-    let state: String
-    var prefix = ""
-    var title: String? = nil
-
-    var body: some View {
-        let appearance = StatusAppearance(state)
-        let color = Color(nsColor:appearance.color)
-        HStack(spacing:5) {
-            Image(systemName:appearance.symbol).foregroundStyle(color)
-            Text(prefix + (title ?? stateLabel(state))).foregroundStyle(Color(nsColor:.labelColor))
-        }
-        .font(.caption.weight(.semibold))
-        .padding(.horizontal,8).padding(.vertical,4)
-        .background(color.opacity(0.12),in:Capsule())
-        .background(Color(nsColor:.controlBackgroundColor),in:Capsule())
-        .overlay(Capsule().strokeBorder(color.opacity(0.5),lineWidth:1))
-        .fixedSize()
-        .accessibilityElement(children:.ignore)
-        .accessibilityLabel(prefix + (title ?? stateLabel(state)))
-    }
-}
-let serviceStates = ["running", "exited", "stopped", "failed", "stop_failed", "succeeded", "unknown",
-                     "starting", "stopping", "cancelled", "never_started"]
-func needsAttention(_ item: ServiceItem) -> Bool {
-    item.problem != nil || item.health == "unavailable" || ["unknown", "failed", "stop_failed"].contains(item.state)
-}
-struct ProjectStatus: Equatable {
-    let total: Int, running: Int, attention: Int
-    let state: String, label: String
-
-    init(_ services: [ServiceItem]) {
-        total = services.count
-        running = services.filter { $0.state == "running" }.count
-        attention = services.filter(needsAttention).count
-        if services.isEmpty { state = "never_started"; label = "无服务" }
-        else if running > 0 { state = "running"; label = "运行中 \(running)" }
-        else if let active = ["starting", "stopping", "stop_failed", "unknown", "failed"].first(where:{ value in services.contains { $0.state == value } }) {
-            state = active; label = stateLabel(active)
-        } else if Set(services.map(\.state)).count == 1 {
-            state = services[0].state; label = stateLabel(state)
-        } else { state = "stopped"; label = "无运行" }
-    }
-}
-func dateLabel(_ number: Any?) -> String {
-    guard let number = number as? Double else { return "—" }
-    return Date(timeIntervalSince1970: number).formatted(date: .abbreviated, time: .standard)
-}
-
-final class Store: ObservableObject {
-    @Published var projects: [ProjectItem] = []
-    @Published var deletedProjects: [DeletedProjectItem] = []
-    @Published var recentlyDeletedProject: String?
-    @Published var services: [ServiceItem] = []
-    @Published var operations: [[String: Any]] = []
-    @Published var selectedProject = "all"
-    @Published var selectedService: String? = nil
-    @Published var search = ""
-    @Published var filter = "all"
-    @Published var busy = false
-    @Published var refreshing = false
-    @Published var error: String? = nil
-    @Published var notice = ""
-    @Published var logs = ""
-    @Published var logRunID: String? = nil
-    @Published var history: [[String: Any]] = []
-    @Published var watcher: [String: Any] = [:]
-    @Published var capture: [String: Any] = [:]
-    @Published var discovery: [String: Any] = [:]
-    var timer: Timer?
-    var onRefresh: (() -> Void)?
-    var revision = 0
-    var runningCount: Int { services.filter { $0.running }.count }
-    var filtered: [ServiceItem] {
-        services.filter { item in
-            (selectedProject == "all" || item.projectID == selectedProject) &&
-            (search.isEmpty || item.name.localizedCaseInsensitiveContains(search) || item.typeName.localizedCaseInsensitiveContains(search)) &&
-            (filter == "all" || (filter == "attention" ? needsAttention(item) : item.state == filter))
-        }
-    }
-    var displayedRunningCount: Int { filtered.filter { $0.running }.count }
-    func projectStatus(_ id: String) -> ProjectStatus { ProjectStatus(services.filter { $0.projectID == id }) }
-    var selected: ServiceItem? { services.first { $0.id == selectedService } }
-    var currentProject: ProjectItem? { projects.first { $0.id == selectedProject } }
-    func start() {
-        ensureWatcher()
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
-    }
-    func ensureWatcher() {
-        let process = Process()
-        process.executableURL = Bundle.main.executableURL
-        process.arguments = ["--watch", "--root", statePath, "--engine", enginePath]
-        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try? process.run()
-    }
-    func refresh() {
-        guard !refreshing else { return }
-        refreshing = true
-        let requestRevision = revision
-        DispatchQueue.global(qos: .utility).async {
-            do {
-                let data = try rpc(["action": "snapshot"]) as? [String: Any] ?? [:]
-                DispatchQueue.main.async {
-                    guard requestRevision == self.revision else { self.refreshing = false; self.refresh(); return }
-                    let previousRun = self.selected?.run
-                    let projects = (data["projects"] as? [[String: Any]] ?? []).map(ProjectItem.init)
-                    if projects != self.projects { self.projects = projects }
-                    self.deletedProjects = (data["deleted_projects"] as? [[String: Any]] ?? []).map(DeletedProjectItem.init)
-                    if let id = self.recentlyDeletedProject, !self.deletedProjects.contains(where: { $0.id == id }) { self.recentlyDeletedProject = nil }
-                    self.services = (data["services"] as? [[String: Any]] ?? []).map { ServiceItem(raw: $0) }
-                    self.operations = data["operations"] as? [[String: Any]] ?? []
-                    self.watcher = data["watcher"] as? [String: Any] ?? [:]
-                    self.capture = data["capture"] as? [String: Any] ?? [:]
-                    if self.selectedProject != "all", !self.projects.contains(where: { $0.id == self.selectedProject }) { self.selectedProject = "all" }
-                    if let id = self.selectedService, !self.services.contains(where: { $0.id == id }) {
-                        self.selectedService = nil; self.logs = ""; self.history = []; self.logRunID = nil
-                    }
-                    self.refreshing = false; self.onRefresh?()
-                    if let currentRun = self.selected?.run,
-                       (previousRun?["id"] as? String != currentRun["id"] as? String ||
-                        previousRun?["state"] as? String != currentRun["state"] as? String ||
-                        previousRun?["ended"] as? Double != currentRun["ended"] as? Double) {
-                        self.loadDetails()
-                    }
-                }
-            } catch { DispatchQueue.main.async { self.error = error.localizedDescription; self.refreshing = false } }
-        }
-    }
-    func perform(_ request: [String: Any], failure: ((String) -> Void)? = nil, completion: ((Any) -> Void)? = nil) {
-        guard !busy else { return }
-        busy = true; notice = "正在执行…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let result = try rpc(request)
-                DispatchQueue.main.async {
-                    self.busy = false; self.revision += 1
-                    if let results = (result as? [[String: Any]]) ?? ((result as? [String: Any])?["results"] as? [[String: Any]]), results.contains(where: { $0["result"] as? String == "failed" }) {
-                        self.notice = "部分操作失败，请查看操作记录"
-                        self.error = results.filter { $0["result"] as? String == "failed" }.map { $0["error"] as? String ?? "失败" }.joined(separator: "\n")
-                    } else { self.notice = "操作已完成" }
-                    completion?(result); self.refresh()
-                    if self.selected != nil { self.loadDetails() }
-                }
-            } catch {
-                DispatchQueue.main.async { self.busy = false; self.notice = "操作失败"; if let failure = failure { failure(error.localizedDescription) } else { self.error = error.localizedDescription }; self.refresh() }
-            }
-        }
-    }
-    func restoreProject(_ id: String) {
-        perform(["action":"project_restore","id":id],completion:{ result in
-            if let data = result as? [String:Any], let project = data["project"] as? [String:Any], let projectID = project["id"] as? String {
-                self.selectedProject = projectID; self.recentlyDeletedProject = nil; self.notice = "项目登记和历史已恢复，未启动服务"
-            }
-        })
-    }
-    func action(_ action: String, _ item: ServiceItem) { perform(["action": action, "id": item.id]) }
-    func loadDetails() {
-        guard let id = selectedService else { return }
-        DispatchQueue.global(qos: .utility).async {
-            let history = (try? rpc(["action":"history", "id":id])) as? [[String: Any]] ?? []
-            let logs: String
-            do { logs = try rpc(["action":"logs", "id":id]) as? String ?? "" }
-            catch { logs = error.localizedDescription }
-            DispatchQueue.main.async {
-                if self.selectedService == id { self.history = history; if self.logRunID == nil { self.logs = logs } }
-            }
-        }
-    }
-    func loadRunLogs(_ runID: String) {
-        guard let id = selectedService else { return }
-        logRunID = runID
-        logs = "正在读取日志…"
-        DispatchQueue.global(qos: .utility).async {
-            let output: String
-            do { output = try rpc(["action":"logs", "id":id, "run_id":runID]) as? String ?? "" }
-            catch { output = error.localizedDescription }
-            DispatchQueue.main.async {
-                if self.selectedService == id && self.logRunID == runID { self.logs = output }
-            }
-        }
-    }
-}
-
 struct ProjectRow: View, Equatable {
     let project: ProjectItem
     let status: ProjectStatus
@@ -513,7 +123,7 @@ struct MainView: View {
                     VStack(spacing:12) {
                         Image(systemName:"terminal").font(.system(size:38)).foregroundStyle(.secondary)
                         Text(store.services.isEmpty ? "还没有登记的服务" : "没有符合条件的服务").font(.headline)
-                        Text(store.services.isEmpty ? "启用全局自动观察后，任意本机聊天启动的服务会出现在这里。" : "试试其他状态，或清空搜索词。").font(.caption).foregroundStyle(.secondary)
+                        Text(store.services.isEmpty ? "已加载并启用 hooks 的聊天可自动观察常见服务；其他路径请显式登记或使用发现功能核对。" : "试试其他状态，或清空搜索词。").font(.caption).foregroundStyle(.secondary)
                         Button("添加服务") { adding = true }
                     }.frame(maxWidth:.infinity,maxHeight:.infinity)
                 } else {
@@ -523,7 +133,7 @@ struct MainView: View {
                                 Image(systemName:item.icon).font(.title3).frame(width:24).foregroundStyle(.secondary)
                                 VStack(alignment:.leading,spacing:5) {
                                     HStack { Text(item.name).font(.headline); if item.keep { Image(systemName:"pin.fill").font(.caption).foregroundStyle(.secondary) } }
-                                    Text(item.typeName + (item.observed ? " · 自动观察" : "")).font(.caption).foregroundStyle(.secondary)
+                                    Text(item.typeName + " · " + item.managementSummary).font(.caption).foregroundStyle(.secondary)
                                     ViewThatFits(in:.horizontal) {
                                         HStack(spacing:6) {
                                             StatusBadge(state:item.state)
@@ -890,44 +500,92 @@ struct SettingsView: View {
     @ObservedObject var store:Store
     @Environment(\.dismiss) var dismiss
     @State var days = "30"
+
     var body:some View {
-        VStack(alignment:.leading,spacing:18) {
-            Text("管理设置").font(.title2.weight(.semibold))
-            Text("退出观察器：" + (store.watcher["alive"] as? Bool == true ? "运行中" : "不可用"))
-            Text("目标应用：" + (store.watcher["bundle_ids"] as? [String] ?? []).joined(separator:", ")).font(.caption.monospaced())
-            if let error = store.watcher["error"] as? String, !error.isEmpty {Text(error).foregroundStyle(.orange)}
-            Button("恢复退出观察器") {store.ensureWatcher();store.refresh()}
-            Divider()
-            Text("服务自动采集：" + (store.capture["alive"] as? Bool == true ? "运行中" : "未运行"))
-            Text("已记录 \(store.capture["event_count"] as? Int ?? 0) 次启动上下文。首次启用需安装并审核全局 hooks；采集组件运行不代表所有聊天已加载 hooks。").font(.caption).foregroundStyle(.secondary)
-            if let error = store.capture["error"] as? String, !error.isEmpty {Text(error).font(.caption).foregroundStyle(.orange)}
-            Button("启动或恢复自动采集") {store.perform(["action":"capture_start"])}.disabled(store.busy)
-            Divider()
-            Text("每次运行最多 3 MiB 滚动日志；历史默认保留。清理只删除已结束记录。").font(.caption).foregroundStyle(.secondary)
-            HStack {TextField("保留天数",text:$days).frame(width:100);Button("清理旧历史") {if let number = Int(days), number > 0 {store.perform(["action":"cleanup","days":number])}}.disabled(store.busy)}
-            if !store.deletedProjects.isEmpty {
+        ScrollView {
+            VStack(alignment:.leading,spacing:18) {
+                Text("管理设置").font(.title2.weight(.semibold))
+                watcherSettings
                 Divider()
-                Text("已删除项目 · 可恢复").font(.headline)
-                ScrollView {
-                    VStack(alignment:.leading,spacing:12) {
-                        ForEach(store.deletedProjects) { project in
-                            HStack {
-                                VStack(alignment:.leading,spacing:3) {
-                                    Text(project.name).font(.subheadline.weight(.semibold))
-                                    Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                                }
-                                Spacer()
-                                Button("恢复项目") { store.restoreProject(project.id) }.disabled(store.busy)
+                captureSettings
+                Divider()
+                retentionSettings
+                deletedProjectSettings
+                Button("打开数据目录") {NSWorkspace.shared.open(URL(fileURLWithPath:statePath))}
+                Text("关闭主窗口继续管理。退出本应用保留服务，退出观察器继续运行。系统关机时不保证停止完成。").font(.caption).foregroundStyle(.secondary)
+                HStack {Spacer();Button("完成") {dismiss()}}
+            }.padding(26)
+        }.frame(width:580,height:640)
+    }
+
+    @ViewBuilder private var watcherSettings:some View {
+        Text("退出观察器：" + (store.watcher["alive"] as? Bool == true ? "运行中" : "不可用"))
+        Text("目标应用：" + (store.watcher["bundle_ids"] as? [String] ?? []).joined(separator:", ")).font(.caption.monospaced())
+        if let error = store.watcher["error"] as? String, !error.isEmpty {Text(error).foregroundStyle(.orange)}
+        Button("恢复退出观察器") {store.ensureWatcher();store.refresh()}
+    }
+
+    @ViewBuilder private var captureSettings:some View {
+        Text("服务自动采集：" + (store.capture["alive"] as? Bool == true ? "运行中" : "未运行"))
+        Text("已记录 \(store.capture["event_count"] as? Int ?? 0) 次启动上下文。首次启用需安装并审核全局 hooks；采集组件运行不代表所有聊天已加载 hooks。").font(.caption).foregroundStyle(.secondary)
+        if let error = store.capture["error"] as? String, !error.isEmpty {Text(error).font(.caption).foregroundStyle(.orange)}
+        if !store.captureDiagnostic.isEmpty {
+            Text(captureDiagnosticText).font(.caption).foregroundStyle(.orange)
+        }
+        Text("旧聊天、未触发 hooks 的启动和复杂脚本可能漏记；发现结果仅为候选，不会自动接管。").font(.caption).foregroundStyle(.secondary)
+        projectCaptureSettings
+        Button("启动或恢复自动采集") {store.perform(["action":"capture_start"])}.disabled(store.busy)
+    }
+
+    private var captureDiagnosticText:String {
+        let stage = store.captureDiagnostic["stage"] as? String ?? ""
+        let type = store.captureDiagnostic["type"] as? String ?? ""
+        return "最近采集故障：" + stage + " / " + type + "；诊断不保存命令或错误正文。可使用显式登记继续工作。"
+    }
+
+    @ViewBuilder private var projectCaptureSettings:some View {
+        if let project = store.currentProject {
+            Toggle("此项目自动采集", isOn:Binding(get:{ project.captureEnabled }, set:{ enabled in
+                store.perform(["action":"capture_policy", "cwd":project.cwd, "enabled":enabled])
+            })).disabled(store.busy)
+            Text("仅影响此工作目录的后续 hook；既有记录和服务继续保留。").font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text("选择具体项目后可关闭该项目的自动采集。").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var retentionSettings:some View {
+        Text("每次运行最多 3 MiB 滚动日志；历史默认保留。按天清理旧历史与采集事件，保留每项最近运行、活动记录与项目回收档案；跳过非本工具日志。").font(.caption).foregroundStyle(.secondary)
+        HStack {
+            TextField("保留天数",text:$days).frame(width:100)
+            Button("清理旧历史") {
+                if let number = Int(days), number > 0 {
+                    store.perform(["action":"cleanup","days":number])
+                }
+            }
+        }.disabled(store.busy)
+    }
+
+    @ViewBuilder private var deletedProjectSettings:some View {
+        if !store.deletedProjects.isEmpty {
+            Divider()
+            Text("已删除项目 · 可恢复").font(.headline)
+            ScrollView {
+                VStack(alignment:.leading,spacing:12) {
+                    ForEach(store.deletedProjects) { project in
+                        HStack {
+                            VStack(alignment:.leading,spacing:3) {
+                                Text(project.name).font(.subheadline.weight(.semibold))
+                                Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
+                            Spacer()
+                            Button("恢复项目") { store.restoreProject(project.id) }.disabled(store.busy)
                         }
                     }
-                }.frame(maxHeight:140)
-                Text("恢复登记和历史，不启动服务；同目录已有项目时会拒绝覆盖。").font(.caption).foregroundStyle(.secondary)
-            }
-            Button("打开数据目录") {NSWorkspace.shared.open(URL(fileURLWithPath:statePath))}
-            Text("关闭主窗口继续管理。退出本应用保留服务，退出观察器继续运行。系统关机时不保证停止完成。").font(.caption).foregroundStyle(.secondary)
-            HStack {Spacer();Button("完成") {dismiss()}}
-        }.padding(26).frame(width:520)
+                }
+            }.frame(maxHeight:140)
+            Text("恢复登记和历史，不启动服务；同目录已有项目时会拒绝覆盖。").font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -1028,11 +686,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func quitApp() {NSApp.terminate(nil)}
 }
 
-if CommandLine.arguments.contains("--watch") {
-    ExitWatcher().start()
-} else {
-    let app = NSApplication.shared
-    let delegate = AppDelegate()
-    app.delegate = delegate
-    app.run()
+@main
+struct ServiceManagerMain {
+    static func main() {
+        if CommandLine.arguments.contains("--watch") {
+            ExitWatcher().start()
+        } else {
+            let app = NSApplication.shared
+            let delegate = AppDelegate()
+            app.delegate = delegate
+            app.run()
+        }
+    }
 }

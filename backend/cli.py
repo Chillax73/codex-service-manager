@@ -51,6 +51,9 @@ def main():
     sub.add_parser('list')
     sub.add_parser('discover')
     sub.add_parser('capture-start')
+    capture_policy = sub.add_parser('capture-policy', help='按规范化工作目录控制后续 hook 采集；不停止已有服务')
+    capture_policy.add_argument('--cwd', default=os.getcwd())
+    capture_policy.add_argument('--enabled', choices=['on', 'off'], required=True)
     configure = sub.add_parser('configure-observed', help='补充观察服务的单项启动配置，不停止或启动服务')
     configure.add_argument('id')
     configure.add_argument('--cwd')
@@ -93,6 +96,8 @@ def main():
     elif args.action == 'configure-observed':
         req['action'] = 'configure_observed'
         req['argv'] = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
+    elif args.action == 'capture-policy':
+        req.update(action='capture_policy', enabled=args.enabled == 'on')
     elif args.action == 'compose':
         req['action'] = 'register_compose'
         req['start'] = not args.register_only

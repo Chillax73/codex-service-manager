@@ -201,7 +201,7 @@ class EngineAcceptance(unittest.TestCase):
         self.assertLessEqual(sum(p.stat().st_size for p in log.parent.glob(log.name+'*')),3*engine.LOG_LIMIT)
         self.assertLessEqual(len(engine.dispatch({'action':'logs','id':'logs'})),65536)
         self.launch('cleanup-live')
-        engine.dispatch({'action':'cleanup','days':0})
+        engine.dispatch({'action':'cleanup','days':1})
         self.assertTrue(engine.latest('cleanup-live'))
         self.assertTrue(engine.observe('cleanup-live')['can_stop'])
         self.stop('cleanup-live')

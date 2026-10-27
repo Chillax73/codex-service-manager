@@ -18,6 +18,7 @@ import sys
 import time
 
 import engine
+import storage
 
 INTERNAL_ID = 'csm-auto-collector'
 ARM_MARKER = '# CSM_CAPTURE_ARM'
@@ -99,26 +100,52 @@ def receive_arms(fd, tracked):
 
 
 def event_dir():
-    path = engine.ROOT / 'capture-events'
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return path
+    return storage.private_directory(engine.ROOT / 'capture-events')
 
 
 def save_event(event):
     path = event_dir() / (event['id'] + '.json')
-    temporary = path.with_suffix('.' + str(os.getpid()) + '.tmp')
-    temporary.write_text(json.dumps(event, ensure_ascii=False))
-    temporary.replace(path)
+    storage.save_json(path, event)
 
 
 def load_events():
     result = []
     for path in event_dir().glob('*.json'):
         try:
+            storage.private_file(path)
             result.append(json.loads(path.read_text()))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             continue
     return result
+
+
+def disabled_projects():
+    row = engine.query('SELECT value FROM metadata WHERE key=?', ['capture_disabled_cwds'], True)
+    return json.loads(row['value']) if row else []
+
+
+def set_policy(cwd, enabled):
+    if type(enabled) is not bool:
+        raise ValueError('采集开关必须是布尔值')
+    path = Path(cwd).expanduser().resolve(strict=True)
+    if not path.is_dir():
+        raise ValueError('工作目录不是文件夹')
+    disabled = set(disabled_projects())
+    disabled.discard(str(path)) if enabled else disabled.add(str(path))
+    engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                 ['capture_disabled_cwds', json.dumps(sorted(disabled))])
+    return {'cwd': str(path), 'enabled': enabled}
+
+
+def record_failure(stage, exc):
+    # Exception text can include argv, URLs or subprocess output. Never persist it.
+    diagnostic = {'stage': stage, 'type': type(exc).__name__, 'at': time.time()}
+    try:
+        engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                     ['capture_diagnostic', json.dumps(diagnostic)])
+    except Exception:
+        pass  # A broken state directory must not prevent the user's shell command.
+    return '服务自动采集失败（' + stage + ' / ' + type(exc).__name__ + '）；请检查采集状态或改用显式登记'
 
 
 def process_table():
@@ -242,6 +269,8 @@ def hook(payload):
     if name == 'PreToolUse' and isinstance(command, str):
         if ARM_MARKER in command:
             return {}
+        if str(Path(payload['cwd']).expanduser().resolve()) in disabled_projects():
+            return {}
         ensure_collector()
         event = {'id': event_id, 'session_id': payload.get('session_id'),
                  'tool_use_id': payload.get('tool_use_id'), 'cwd': payload.get('cwd'),
@@ -261,12 +290,14 @@ def hook(payload):
         rewritten = ARM_MARKER + '\n' + prefix + ' --pid "$$" >/dev/null 2>&1 || :\n' + command + '\n' + \
             status_var + '=$?\n' + prefix + ' --pid "$$" >/dev/null 2>&1 || :\nexit "$' + status_var + '"'
         return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'allow',
-                                      'updatedInput': {'command': rewritten}}}
+                                      'updatedInput': {**tool_input, 'command': rewritten}}}
     if name == 'PostToolUse':
         path = event_dir() / (event_id + '.json')
         if path.exists():
             event = json.loads(path.read_text())
             event['finished'] = time.time()
+            if not event.get('armed'):
+                record_failure('checkpoint', TimeoutError())
             if (event.get('docker_hint') or {}).get('type') == 'container':
                 output = payload.get('tool_response')
                 if isinstance(output, dict):
@@ -469,7 +500,7 @@ def collect_once(tracked, first_seen):
         collect_containers(events)
         docker_error = None
     except Exception as exc:
-        docker_error = str(exc)[-500:]
+        docker_error = record_failure('docker', exc)
     # Reconcile ended observed runs even with no UI open.
     for row in engine.query('SELECT id,spec FROM services'):
         if json.loads(row['spec']).get('management') == 'observed':
@@ -495,7 +526,7 @@ def collect():
                 receive_arms(channel, tracked)
                 tracked, first_seen, error = collect_once(tracked, first_seen)
             except Exception as exc:
-                error = str(exc)[-500:]
+                error = record_failure('collector', exc)
             engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture', json.dumps({
                 'pid': os.getpid(), 'birth': own['birth'], 'updated': time.time(), 'error': error,
                 'tracked': len(tracked), 'event_count': len(load_events())})])
@@ -515,7 +546,7 @@ def main():
         try:
             result = hook(json.load(sys.stdin))
         except Exception as exc:
-            result = {'systemMessage': '服务自动采集接入失败：' + str(exc)[-300:]}
+            result = {'systemMessage': record_failure('hook', exc)}
         print(json.dumps(result, ensure_ascii=False))
     elif args.mode == 'arm':
         arm(args.event, args.pid)

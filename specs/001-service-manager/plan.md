@@ -54,7 +54,7 @@ observe 输出独立能力和 capability_reason；operate 每次重查。旧运�
 
 ## 接口
 
-`engine.py rpc` 从 stdin 读取单个 JSON `{action, ...}`，stdout 输出 `{ok, result}` 或 `{ok:false,error}`，错误退出非零。主要 action：snapshot、capture_start、launch、register_container、register_compose、start/stop/restart/force、project_policy、service_keep、end_project、codex_exit、history、logs、discover、cleanup、watcher_event。
+`engine.py rpc` 从 stdin 读取单个 JSON `{action, ...}`，stdout 输出 `{ok, result}` 或 `{ok:false,error}`，错误退出非零。主要 action：snapshot、capture_start、capture_policy、launch、register_container、register_compose、start/stop/restart/force、project_policy、service_keep、end_project、codex_exit、history、logs、discover、cleanup、watcher_event。
 
 配套入口的启动保存 argv 数组，不通过拼接 shell 命令执行；GUI 手工输入命令仅由 shlex 分词，需要 shell 语义时明确使用 shell argv。
 
@@ -95,3 +95,9 @@ ProjectStatus 从完整项目服务快照汇总主状态、运行数量、总数
 使用现有 projects.name，无 schema 迁移。新增 project_rename、project_delete_preview、project_delete RPC；变更持有全局 mutation_lock，删除重新 observe 归属服务并在单个 SQLite 事务归档至 metadata 回收记录后移出关联表，不执行信号、Docker rm 或磁盘项目清理。只读快照容忍并发删除的服务行消失。CLI 增加 rename-project/delete-project（显式确认）便于诊断。SwiftUI 项目菜单打开改名/删除 sheet；删除 sheet 展示范围、数量、阻碍和重新检查，最终请求仍以后端为准。Store 在刷新后校正选择，并丢弃变更前已发出的旧快照。
 
 复用 metadata 的 deleted_project:UUID 命名空间，无 schema 迁移；快照仅暴露名称/目录/时间/数量摘要。恢复校验目录和标识冲突并事务回填，随后移除归档。界面提供撤销删除和设置中的恢复列表。项目行使用 Equatable 避免刷新使上下文菜单收起，补齐标准编辑菜单。
+
+## 审查修复设计（2026-10-27）
+
+SQLite 建表及私有文件操作集中至 backend/storage.py，显式历史清理集中至 backend/maintenance.py；engine 保留共享 ROOT 与 RPC，capture 通过 metadata 保存禁用目录和脱敏诊断，无 schema 迁移。Swift 拆为 Models、Status、Store、Infrastructure 与视图/显式 @main 入口，构建脚本逐项编译和复制新增模块。
+
+监督器取消主进程存活且无停止请求时的全进程组扫描，停止与退出路径继续实时查组；保留两秒 UI 轮询与单次 JSON RPC，不引入跨请求身份缓存。详细范围、设计与里程碑见 [修复设计](../../docs/features/review-hardening/DESIGN.md) 和 [实施计划](../../docs/features/review-hardening/PLAN.md)。

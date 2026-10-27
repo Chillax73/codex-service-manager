@@ -27,14 +27,22 @@ jobs:
         run: /usr/bin/python3 scripts/doctor.py
       - name: Publish privacy scan
         run: /usr/bin/python3 scripts/check_publish.py
+      - name: Release version consistency
+        run: /usr/bin/python3 scripts/check_release.py
       - name: Workspace contracts
         run: /usr/bin/python3 tests/test_support.py
       - name: Endpoint contracts
         run: /usr/bin/python3 tests/test_endpoints.py
+      - name: Shell hook compatibility and opt-out
+        run: /usr/bin/python3 tests/test_capture_shell.py
+      - name: Private storage and bounded retention
+        run: /usr/bin/python3 tests/test_maintenance.py
       - name: Real process acceptance
         run: /usr/bin/python3 tests/test_engine.py
       - name: Project rename, delete and restore
         run: /usr/bin/python3 tests/test_projects.py
+      - name: Core automatic capture (no npm or Maven fixtures)
+        run: /usr/bin/python3 tests/test_capture.py --suite core
       - name: Native build
         run: ./scripts/build.sh
       - name: Ad-hoc signature

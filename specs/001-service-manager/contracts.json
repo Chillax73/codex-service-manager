@@ -16,6 +16,11 @@
       "action": "capture_start"
     },
     {
+      "action": "capture_policy",
+      "cwd": "/absolute/project",
+      "enabled": false
+    },
+    {
       "action": "launch",
       "name": "frontend",
       "cwd": "/absolute/project",
@@ -140,7 +145,11 @@
     "capture_start uses a collector startup lock and the registered launch path without nesting the global mutation lock",
     "Observed stop verifies each launcher/descendant identity and never signals shared process groups or the tool shell",
     "configure_observed preserves service/run identity and does not start or stop processes",
-    "Restart creates a supervised run in the selected state root only after the old tree and ports are released"
+    "Restart creates a supervised run in the selected state root only after the old tree and ports are released",
+    "Capture opt-out matches normalized cwd exactly and leaves existing services untouched",
+    "Cleanup requires integer days in 1..36500 and preserves active/latest runs",
+    "Log read and cleanup reject paths outside the manager run log namespace",
+    "Collector diagnostics store stage/type/time, never raw exception text"
   ],
   "snapshot_fields": {
     "service.management": "managed | attached (some verified manual capabilities) | observed (no current control)",
@@ -151,6 +160,8 @@
     "capture": "null or local collector metadata with computed alive; not a desktop hook reload status",
     "service.can_force": "boolean; verified remaining scope after stop failure (Docker identity when available)",
     "service.capability_reason": "null or reason for missing/rejected capability",
-    "service.automatic_end": "boolean; false until original observed service starts through manager"
+    "service.automatic_end": "boolean; false until original observed service starts through manager",
+    "project.capture_enabled": "boolean; policy for future hooks in this exact normalized cwd",
+    "capture_diagnostic": "null or most recent failure stage/type/at; not proof of callback delivery"
   }
 }

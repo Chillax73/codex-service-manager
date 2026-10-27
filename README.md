@@ -22,6 +22,10 @@
 - 项目结束：每个项目独立选择手动结束、退出 Codex、两者或持续运行；服务可设置保留例外。
 - 原生界面：主窗口、系统菜单栏、详情、日志、历史、配置、发现与观察器恢复。
 
+## 审查修复（未发布）
+
+核心采集回归加入 macOS CI；新增 shell 边界测试、按项目关闭后续采集、脱敏故障状态。存储/历史清理与 Swift 模型/状态/基础设施拆分，日志清理校验归属并保留最近运行。另提供快照性能基线、发布清单和版本一致性检查。范围与本机验证见 [修复验收](docs/results/REVIEW_HARDENING.md)；这不代表旧聊天热加载、无 hook 自动归属或公证分发已完成。
+
 ## 构建与启动
 
 需要 macOS 13+ 和 Command Line Tools（Swift 与系统 `/usr/bin/python3`）。缺少工具时运行 `xcode-select --install`，安装完成后再继续。产品 Python 后端仅使用标准库，无需 pip 安装。Docker 功能另需 Docker CLI/Desktop 与 Compose；运行 Java/Node 服务需自行安装其运行时。
