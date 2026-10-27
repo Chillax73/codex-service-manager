@@ -500,58 +500,92 @@ struct SettingsView: View {
     @ObservedObject var store:Store
     @Environment(\.dismiss) var dismiss
     @State var days = "30"
+
     var body:some View {
         ScrollView {
-        VStack(alignment:.leading,spacing:18) {
-            Text("管理设置").font(.title2.weight(.semibold))
-            Text("退出观察器：" + (store.watcher["alive"] as? Bool == true ? "运行中" : "不可用"))
-            Text("目标应用：" + (store.watcher["bundle_ids"] as? [String] ?? []).joined(separator:", ")).font(.caption.monospaced())
-            if let error = store.watcher["error"] as? String, !error.isEmpty {Text(error).foregroundStyle(.orange)}
-            Button("恢复退出观察器") {store.ensureWatcher();store.refresh()}
-            Divider()
-            Text("服务自动采集：" + (store.capture["alive"] as? Bool == true ? "运行中" : "未运行"))
-            Text("已记录 \(store.capture["event_count"] as? Int ?? 0) 次启动上下文。首次启用需安装并审核全局 hooks；采集组件运行不代表所有聊天已加载 hooks。").font(.caption).foregroundStyle(.secondary)
-            if let error = store.capture["error"] as? String, !error.isEmpty {Text(error).font(.caption).foregroundStyle(.orange)}
-            if !store.captureDiagnostic.isEmpty {
-                Text("最近采集故障：" + (store.captureDiagnostic["stage"] as? String ?? "") + " / " + (store.captureDiagnostic["type"] as? String ?? "") + "；诊断不保存命令或错误正文。可使用显式登记继续工作。").font(.caption).foregroundStyle(.orange)
-            }
-            Text("旧聊天、未触发 hooks 的启动和复杂脚本可能漏记；发现结果仅为候选，不会自动接管。").font(.caption).foregroundStyle(.secondary)
-            if let project = store.currentProject {
-                Toggle("此项目自动采集", isOn:Binding(get:{ project.captureEnabled }, set:{ enabled in
-                    store.perform(["action":"capture_policy", "cwd":project.cwd, "enabled":enabled])
-                })).disabled(store.busy)
-                Text("仅影响此工作目录的后续 hook；既有记录和服务继续保留。").font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("选择具体项目后可关闭该项目的自动采集。").font(.caption).foregroundStyle(.secondary)
-            }
-            Button("启动或恢复自动采集") {store.perform(["action":"capture_start"])}.disabled(store.busy)
-            Divider()
-            Text("每次运行最多 3 MiB 滚动日志；历史默认保留。按天清理旧历史与采集事件，保留每项最近运行、活动记录与项目回收档案；跳过非本工具日志。").font(.caption).foregroundStyle(.secondary)
-            HStack {TextField("保留天数",text:$days).frame(width:100);Button("清理旧历史") {if let number = Int(days), number > 0 {store.perform(["action":"cleanup","days":number])}}.disabled(store.busy)}
-            if !store.deletedProjects.isEmpty {
+            VStack(alignment:.leading,spacing:18) {
+                Text("管理设置").font(.title2.weight(.semibold))
+                watcherSettings
                 Divider()
-                Text("已删除项目 · 可恢复").font(.headline)
-                ScrollView {
-                    VStack(alignment:.leading,spacing:12) {
-                        ForEach(store.deletedProjects) { project in
-                            HStack {
-                                VStack(alignment:.leading,spacing:3) {
-                                    Text(project.name).font(.subheadline.weight(.semibold))
-                                    Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                                }
-                                Spacer()
-                                Button("恢复项目") { store.restoreProject(project.id) }.disabled(store.busy)
+                captureSettings
+                Divider()
+                retentionSettings
+                deletedProjectSettings
+                Button("打开数据目录") {NSWorkspace.shared.open(URL(fileURLWithPath:statePath))}
+                Text("关闭主窗口继续管理。退出本应用保留服务，退出观察器继续运行。系统关机时不保证停止完成。").font(.caption).foregroundStyle(.secondary)
+                HStack {Spacer();Button("完成") {dismiss()}}
+            }.padding(26)
+        }.frame(width:580,height:640)
+    }
+
+    @ViewBuilder private var watcherSettings:some View {
+        Text("退出观察器：" + (store.watcher["alive"] as? Bool == true ? "运行中" : "不可用"))
+        Text("目标应用：" + (store.watcher["bundle_ids"] as? [String] ?? []).joined(separator:", ")).font(.caption.monospaced())
+        if let error = store.watcher["error"] as? String, !error.isEmpty {Text(error).foregroundStyle(.orange)}
+        Button("恢复退出观察器") {store.ensureWatcher();store.refresh()}
+    }
+
+    @ViewBuilder private var captureSettings:some View {
+        Text("服务自动采集：" + (store.capture["alive"] as? Bool == true ? "运行中" : "未运行"))
+        Text("已记录 \(store.capture["event_count"] as? Int ?? 0) 次启动上下文。首次启用需安装并审核全局 hooks；采集组件运行不代表所有聊天已加载 hooks。").font(.caption).foregroundStyle(.secondary)
+        if let error = store.capture["error"] as? String, !error.isEmpty {Text(error).font(.caption).foregroundStyle(.orange)}
+        if !store.captureDiagnostic.isEmpty {
+            Text(captureDiagnosticText).font(.caption).foregroundStyle(.orange)
+        }
+        Text("旧聊天、未触发 hooks 的启动和复杂脚本可能漏记；发现结果仅为候选，不会自动接管。").font(.caption).foregroundStyle(.secondary)
+        projectCaptureSettings
+        Button("启动或恢复自动采集") {store.perform(["action":"capture_start"])}.disabled(store.busy)
+    }
+
+    private var captureDiagnosticText:String {
+        let stage = store.captureDiagnostic["stage"] as? String ?? ""
+        let type = store.captureDiagnostic["type"] as? String ?? ""
+        return "最近采集故障：" + stage + " / " + type + "；诊断不保存命令或错误正文。可使用显式登记继续工作。"
+    }
+
+    @ViewBuilder private var projectCaptureSettings:some View {
+        if let project = store.currentProject {
+            Toggle("此项目自动采集", isOn:Binding(get:{ project.captureEnabled }, set:{ enabled in
+                store.perform(["action":"capture_policy", "cwd":project.cwd, "enabled":enabled])
+            })).disabled(store.busy)
+            Text("仅影响此工作目录的后续 hook；既有记录和服务继续保留。").font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text("选择具体项目后可关闭该项目的自动采集。").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var retentionSettings:some View {
+        Text("每次运行最多 3 MiB 滚动日志；历史默认保留。按天清理旧历史与采集事件，保留每项最近运行、活动记录与项目回收档案；跳过非本工具日志。").font(.caption).foregroundStyle(.secondary)
+        HStack {
+            TextField("保留天数",text:$days).frame(width:100)
+            Button("清理旧历史") {
+                if let number = Int(days), number > 0 {
+                    store.perform(["action":"cleanup","days":number])
+                }
+            }
+        }.disabled(store.busy)
+    }
+
+    @ViewBuilder private var deletedProjectSettings:some View {
+        if !store.deletedProjects.isEmpty {
+            Divider()
+            Text("已删除项目 · 可恢复").font(.headline)
+            ScrollView {
+                VStack(alignment:.leading,spacing:12) {
+                    ForEach(store.deletedProjects) { project in
+                        HStack {
+                            VStack(alignment:.leading,spacing:3) {
+                                Text(project.name).font(.subheadline.weight(.semibold))
+                                Text(project.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
+                            Spacer()
+                            Button("恢复项目") { store.restoreProject(project.id) }.disabled(store.busy)
                         }
                     }
-                }.frame(maxHeight:140)
-                Text("恢复登记和历史，不启动服务；同目录已有项目时会拒绝覆盖。").font(.caption).foregroundStyle(.secondary)
-            }
-            Button("打开数据目录") {NSWorkspace.shared.open(URL(fileURLWithPath:statePath))}
-            Text("关闭主窗口继续管理。退出本应用保留服务，退出观察器继续运行。系统关机时不保证停止完成。").font(.caption).foregroundStyle(.secondary)
-            HStack {Spacer();Button("完成") {dismiss()}}
-        }.padding(26)
-        }.frame(width:580,height:640)
+                }
+            }.frame(maxHeight:140)
+            Text("恢复登记和历史，不启动服务；同目录已有项目时会拒绝覆盖。").font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
