@@ -70,3 +70,18 @@ CSM_POC_MARKER=readme python3 -c 'print("hook-probe")'
 2. 检查项目 `.codex/hooks.json`，仅移除命令指向本克隆 `validation/hook_recorder.py` 的条目，保留同一事件中的其他 handler。如果整个文件只有本工具配置，可移除该文件；不要删除共享 `.codex/` 或其他设置。
 3. 本机检查副本 `validation/hooks.json` 和实验事件 `validation/.state/hook-events.jsonl` 可在确认归属并备份需要的记录后删除。`.state/` 还可能含其他原型诊断，不要整目录清空。
 4. 移除 hooks 不会停止已登记服务，也不会移除正式 AGENTS.md 接入；这两件事分别按 [使用与卸载](OPERATIONS.md) 操作。
+
+## 命令边界与项目级禁用
+
+当前回归比较 Bash/zsh 原命令与插桩命令的 stdout、stderr、退出码，覆盖多行/heredoc、管道/pipefail、set -e、EXIT/TERM trap、显式 exit/exec 与超时终止。显式 exit/exec、errexit 和信号可能跳过末尾检查点；依赖 shell 初始状态、DEBUG trap、xtrace 或其他 Hook 改写顺序的任意命令仍需实测。不能据此承诺对所有 shell 程序透明。重复采集标记避免二次插入，原工具输入的其他字段保留。
+
+在原生应用选择具体项目，打开“管理设置 → 此项目自动采集”关闭；或运行：
+
+```sh
+/path/to/codex-service-manager/scripts/csm capture-policy --cwd /path/to/project --enabled off
+# 恢复：把 off 改为 on
+```
+
+策略按规范化 cwd 精确匹配；子目录和其他 worktree 独立，不自动递归。关闭后，后续 hook 不启动采集器、不插桩、不新增事件；既有记录及已确认后代的观察继续保留，不停止服务，也不撤销已启用的其他 hooks。可继续使用配套入口显式登记。此设置不会影响已安装的旧版 capture.py，升级后需正常更新并审核 handler 指向的代码。
+
+Hook/采集器/容器观察故障在管理设置显示阶段、异常类型和时间元数据，不记录异常正文。PreToolUse 接入失败仍返回提示并让业务工具走正常授权流程；arm 的错误输出被隔离，PostToolUse 若发现没有成功 arm 则记录 checkpoint 故障。缺失 PostToolUse 或运行时不可达时不能保证产生提示，心跳正常也不能证明本次命令已采集。

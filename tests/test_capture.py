@@ -4,6 +4,7 @@ Desktop callback coverage is separate. Fixtures deliberately use ordinary shell
 commands to exercise the integration gap; all fixture PIDs belong to this test.
 """
 import importlib.util
+import argparse
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ sys.path.insert(0, str(BASE / 'backend'))
 import capture
 import engine
 import adoption
-from support import stop_test_watcher, tool
+from support import prepare_workspace, stop_test_watcher, tool
 
 
 def free_port():
@@ -484,11 +485,19 @@ class CaptureAcceptance(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    (BASE / '.test-state').mkdir(exist_ok=True)
-    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CaptureAcceptance))
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--suite', choices=['core', 'projects', 'full'], default='core')
+    args = parser.parse_args()
+    prepare_workspace()
+    project_tests = ('test_17_', 'test_18_')
+    names = unittest.defaultTestLoader.getTestCaseNames(CaptureAcceptance)
+    selected = [name for name in names if args.suite == 'full' or
+                (name.startswith(project_tests) == (args.suite == 'projects'))]
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(CaptureAcceptance(name) for name in selected))
     evidence = {'generated_at': time.time(), 'tests_run': result.testsRun, 'passed': result.wasSuccessful(),
                 'failures': [(str(t), s) for t, s in result.failures], 'errors': [(str(t), s) for t, s in result.errors],
                 'state_root': str(CaptureAcceptance.root), 'hook_input': 'synthetic; actual processes and collector',
                 'desktop_callback_verified_by_this_test': False}
+    evidence['suite'] = args.suite
     (BASE / 'docs/evidence/capture-tests.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + '\n')
     sys.exit(0 if result.wasSuccessful() else 1)

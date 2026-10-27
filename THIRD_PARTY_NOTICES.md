@@ -15,3 +15,5 @@
 | docs/images/app-preview.png | 本工具真实窗口，临时测试数据；[复核记录](docs/images/README.md) | 项目 MIT；未复制其他应用或品牌图片。 |
 
 源码发行包不包含 node_modules、Maven target、Docker 镜像或 macOS 框架。如以后分发含依赖的安装包，应重新生成完整组件清单、保留各 LICENSE/NOTICE，并核对 Python 运行时和系统平台许可；当前源码预览不把这些组件重新声明为 MIT。
+
+2026-10-27 审查修复：新增/拆分的存储、清理、采集契约、基线与版本检查代码均为本项目实现，仅使用 Python 标准库及已有 macOS 系统框架；未新增第三方运行依赖、vendored 代码或图片资源，现有许可与分发范围保持适用。

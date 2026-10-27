@@ -7,6 +7,10 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_support.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_endpoints.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_engine.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_projects.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture_shell.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_maintenance.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
+/usr/bin/python3 scripts/check_release.py
 ./scripts/build.sh
 ```
 
@@ -15,12 +19,14 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_projects.py
 ## 用户级自动观察（开发分支）
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
+# 完整项目套件需先按下文准备 npm/Maven 夹具：
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite full
 # Docker/Compose 可用且 python:3.12-slim 已存在时：
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_capture_docker.py
 ```
 
-进程入口使用独立临时状态，启动真实采集器及测试进程，需要本机进程/端口权限。现含 21 组：原有采集、普通接管/配置、Vite、离线 Maven/Spring、多服务/已登记任务隔离、身份/超时/防副本及独立 RPC 状态目录。容器入口使用唯一测试标签、已有镜像，比较原有容器状态，现含 7 项检查。hook 输入为显式模拟，不能当作真实桌面回调。原生 UI 的实际操作及独立进程核验见 adoption-ui-tests.json，综合结果见 [普通启动接管](results/ORDINARY_ADOPTION.md)。当前通用 CI 尚未运行这两个入口；macOS ps/lsof 采集不能直接加入 Linux Docker job。
+进程入口使用独立临时状态，启动真实采集器及测试进程，需要本机进程/端口权限。现含 21 组：原有采集、普通接管/配置、Vite、离线 Maven/Spring、多服务/已登记任务隔离、身份/超时/防副本及独立 RPC 状态目录。容器入口使用唯一测试标签、已有镜像，比较原有容器状态，现含 7 项检查。hook 输入为显式模拟，不能当作真实桌面回调。原生 UI 的实际操作及独立进程核验见 adoption-ui-tests.json，综合结果见 [普通启动接管](results/ORDINARY_ADOPTION.md)。macOS CI 必跑 `--suite core` 的 19 项，不需要 npm/Maven。默认也为 core；`--suite projects` 单独运行 Vite/Maven 两项，`--suite full` 运行全部 21 项，缺少项目依赖会失败。Docker 采集仍需单独验收，macOS ps/lsof 采集不能直接加入 Linux Docker job。
 
 真实桌面验收另行进行：正常安装并逐项审核两个 User config handler，在用户授权的新聊天里让 Codex 运行 `tests/desktop_capture_fixture.py --seconds 120`。夹具直接产生两个 HTTP 服务和一个持续任务，测试的是原始 shell 启动采集，不经 csm launch；普通开发长期服务仍遵循项目配套入口。说明自动附加 arm 检查点及本机元数据副作用，正常申请测试端口/进程权限。夹具清理自己的子进程；核对实际事件、项目、原生窗口运行数量、观察标识和禁用控制，不把手动终端执行当作工具事件。
 
@@ -60,6 +66,16 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_project_docker.py
 
 Docker/Compose 可用，测试以唯一标签隔离对象并核对原有容器状态，删除仅测试拥有的容器/卷。镜像版本标签可能更新，结果须同时保留本机具体镜像 ID。
 
-`.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名验证、14 组真实进程、9 组端点、3 组目录/工具契约、13 组项目管理契约和隐私扫描，并在独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会自动触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 手动执行 Docker/Compose 、真实失败场景及项目改名/删除/恢复。这不表示应用支持 Linux。工作流无写权限、不上传原始证据。
+`.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名验证、14 组真实进程、9 组端点、3 组目录/工具契约、13 组项目管理契约、隐私扫描、19 组核心采集、5 组 shell/策略契约（含 Bash/zsh 边界矩阵）、7 组存储/清理契约和版本一致性检查，并在独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会自动触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 手动执行 Docker/Compose 、真实失败场景及项目改名/删除/恢复。这不表示应用支持 Linux。工作流无写权限、不上传原始证据。
 
 真实主窗口、菜单栏与实际 Codex 退出继续使用 [验收索引](../specs/001-service-manager/acceptance.md) 在解锁桌面操作；引擎中的合成策略测试只能验证规则，不是实际退出证据。
+
+## 快照性能基线
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot.py --counts 5 20 50 --samples 3
+```
+
+入口在 .test-state 下创建唯一状态目录，启动真实受监督的休眠任务；不监听端口、不启动 watcher/collector、不访问正式数据库。需要正常进程权限，保留已启用的采集检查点。退出时仅按已确认身份停止测试任务；清理失败保留原路径，便于正常恢复。请在其他测试结束后运行以减少负载干扰。
+
+每个数量场景分别测量引擎 snapshot、Python CPU、快照查询子进程 CPU/次数，以及真实一次性 JSON RPC 的端到端耗时。另列 instrumentation 进程总耗时以区分测量包装开销。CPU 不含常驻监督器/采集器的后台总消耗，纯任务基线也不覆盖健康 URL、容器、未知身份或复杂观察树。原始 JSON 仅留本机；脱敏摘要见 [修复验收](results/REVIEW_HARDENING.md)。

@@ -8,7 +8,7 @@
 | services | id；project_id → projects | name、kind、spec JSON、keep、group_id |
 | runs | id；service_id → services | started、ended、state、exit_code、runtime JSON、error、log |
 | operations | id；target 对应服务 ID | action、trigger、started、ended、result、error |
-| metadata | key | value JSON，保存退出观察器、自动采集器身份/心跳、跟踪状态与项目回收记录 |
+| metadata | key | value JSON，保存退出观察器、自动采集器身份/心跳、跟踪状态、采集策略/诊断与项目回收记录 |
 
 应用服务 ID 默认由规范化 cwd + 稳定名称产生；容器使用完整容器 ID 派生；Compose 由 cwd/file/group/member 派生。显式服务 ID 只接受有限字符集合。run ID 与 operation ID 为独立 UUID。
 
@@ -16,7 +16,7 @@
 
 容器 runtime 保存完整 IDs、StartedAt、原生状态、健康状态和实际端口绑定。并发状态查询用服务专属锁串行登记容器运行历史。提前退出也保存可获取的最后一次运行；起止时间优先来自 Docker StartedAt/FinishedAt，启动请求被拒绝时记录失败尝试与诊断。已匹配发布端口的本机健康 URL 保存内部 TCP 端口，快照使用当前宿主端口，保留原始配置。
 
-运行状态和健康检查各自展示；unknown 不代表 stopped。后台任务的成功/失败/取消独立于长期服务自然退出。历史清理仅作用于 ended 不为空的记录，不清除活运行。
+运行状态和健康检查各自展示；unknown 不代表 stopped。后台任务的成功/失败/取消独立于长期服务自然退出。历史清理仅作用于超过保留期限且 ended 不为空的记录，并保留每个服务的最近运行；期限接受 1–36500 的整数天数，不清除活动运行。日志仅在 ROOT/logs 下与 run ID 对应的普通文件才可读取/删除，拒绝外部路径及符号链接目标；回收档案和其中引用的日志保留。
 
 ## 项目管理与恢复
 
@@ -34,8 +34,14 @@
 
 内部任务 `csm-auto-collector` 使用 `source=internal`，从常规服务列表与仅含内部任务的项目隐藏；批量控制跳过。metadata 的 capture 保存 pid/birth/updated/error/tracked/event_count，快照按身份及 20 秒心跳计算 alive；capture_tracking 保存已确认 PID/出生身份/事件关联，用于采集器恢复。
 
-状态目录的 capture-events/*.json 仅保存白名单事件字段。临时私密目录的 FIFO/ack 传递事件 ID、实际父 shell PID 及三个必要环境键，shell 检查点不直接读数据库或进程表。新事件按聊天/工具调用标识生成摘要 ID，相同事件幂等。事件文件与跟踪元数据当前没有自动保留期清理；删除数据库不停止组件或业务服务。
+状态目录的 capture-events/*.json 仅保存白名单事件字段。临时私密目录的 FIFO/ack 传递事件 ID、实际父 shell PID 及三个必要环境键，shell 检查点不直接读数据库或进程表。新事件按聊天/工具调用标识生成摘要 ID，相同事件幂等。事件默认不自动过期；显式清理按期限删除已过期事件，但保留 capture_tracking 引用的上下文，不清空跟踪元数据。删除数据库不停止组件或业务服务。
 
 尚未实现的后台发现兜底需要独立来源与归属字段语义，不能伪造 `global_hook` 事件；已退出候选也不能创建虚假的活动运行。后续升级管理能力需单独补齐身份与启动配置，不能由观察 spec 推导完整环境或历史。
 
 接管运行 runtime.launch_members 保存已确认启动器/子进程出生身份，防止监听者退出但启动器存活时启动副本；control_members 保存已发送停止的范围，以支持停止失败后核对剩余对象。不保存 ps 的完整命令参数。控制逐个复核身份，不使用观察进程的共享进程组。新监督运行沿用 service ID、新建 run ID，停止前运行的日志/退出码仍未知。
+
+## 采集策略与诊断（2026-10-27）
+
+无需新增表：metadata.capture_disabled_cwds 保存规范化绝对 cwd 数组，精确匹配后续 hook；不递归，不改变既有服务或项目结束策略。snapshot.projects[].capture_enabled 根据当前目录策略计算。
+
+metadata.capture_diagnostic 保存最近故障的 stage/type/at，经同名快照字段输出；不保存命令、工具输出或异常正文。它与采集器心跳独立，最近故障不表示当前仍故障，心跳正常也不能证明每个聊天回调已执行。

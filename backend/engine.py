@@ -15,6 +15,7 @@ import re
 import signal
 import socket
 import sqlite3
+import storage
 import subprocess
 import sys
 import threading
@@ -40,26 +41,7 @@ def uid():
 
 
 def database():
-    ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
-    db = sqlite3.connect(str(ROOT / 'manager.sqlite'), timeout=30)
-    db.row_factory = sqlite3.Row
-    db.execute('PRAGMA journal_mode=WAL')
-    db.executescript('''
-    CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, cwd TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL, manual INTEGER NOT NULL DEFAULT 1, codex_exit INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS services(id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
-      name TEXT NOT NULL, kind TEXT NOT NULL, spec TEXT NOT NULL, keep INTEGER NOT NULL DEFAULT 0,
-      group_id TEXT);
-    CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, service_id TEXT NOT NULL,
-      started REAL NOT NULL, ended REAL, state TEXT NOT NULL, exit_code INTEGER,
-      runtime TEXT NOT NULL DEFAULT '{}', error TEXT, log TEXT);
-    CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, target TEXT NOT NULL,
-      action TEXT NOT NULL, trigger TEXT NOT NULL, started REAL NOT NULL, ended REAL,
-      result TEXT, error TEXT);
-    CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS runs_service ON runs(service_id, started DESC);
-    ''')
-    return db
+    return storage.database(ROOT)
 
 
 def query(sql, values=(), one=False):
@@ -180,7 +162,7 @@ def health(url):
 def new_run(service_id, runtime=None, started=None):
     run_id = uid()
     log = str(ROOT / 'logs' / (run_id + '.log'))
-    (ROOT / 'logs').mkdir(exist_ok=True, mode=0o700)
+    storage.private_directory(ROOT / 'logs')
     write('INSERT INTO runs(id,service_id,started,state,runtime,log) VALUES (?,?,?,?,?,?)',
           [run_id, service_id, started if started is not None else timestamp(), 'starting', json.dumps(runtime or {}), log])
     return run_id
@@ -329,10 +311,10 @@ def supervise(run_id):
             # poll() reaps the leader; only signal groups while the leader is still alive, or
             # verified children from the known group remain. No external stale-PID signalling.
             alive = child.poll() is None
-            members = group_members(child.pid)
             if pending[0]:
                 action = pending[0]
                 pending[0] = None
+                members = group_members(child.pid)
                 if members:
                     os.killpg(child.pid, signal.SIGKILL if action == 'force' else signal.SIGTERM)
                 until = timestamp() + 5
@@ -344,6 +326,7 @@ def supervise(run_id):
                     stopped = True
                     break
             elif not alive:
+                members = group_members(child.pid)
                 if members:
                     os.killpg(child.pid, signal.SIGTERM)
                     until = timestamp() + 5
@@ -825,6 +808,8 @@ def restore_project(trash_id):
 
 
 def snapshot():
+    import capture as capture_module
+    disabled = capture_module.disabled_projects()
     ids = [row['id'] for row in query('SELECT id,spec FROM services ORDER BY name')
            if json.loads(row['spec']).get('source') != 'internal']
     def observe_existing(sid):
@@ -847,9 +832,14 @@ def snapshot():
     projects = [p for p in query('SELECT * FROM projects ORDER BY name')
                 if not query('SELECT id FROM services WHERE project_id=?', [p['id']]) or
                 any(json.loads(s['spec']).get('source') != 'internal' for s in query('SELECT spec FROM services WHERE project_id=?', [p['id']]))]
+    for proj in projects:
+        proj['capture_enabled'] = proj['cwd'] not in disabled
+    diagnostic = query('SELECT value FROM metadata WHERE key=?', ['capture_diagnostic'], True)
     return {'projects': projects, 'services': services,
             'operations': query('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
-            'watcher': watcher, 'capture': capture, 'deleted_projects': deleted_projects(), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
+            'watcher': watcher, 'capture': capture,
+            'capture_diagnostic': json.loads(diagnostic['value']) if diagnostic else None,
+            'deleted_projects': deleted_projects(), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
 
 
 def batch(req, trigger='user'):
@@ -941,8 +931,11 @@ def dispatch(req):
             return compose_command(item, 'logs', '--no-color', '--tail', '200', item['spec']['member'], merge_stderr=True)[-65536:]
         run = latest(req['id']) if not req.get('run_id') else query('SELECT * FROM runs WHERE id=? AND service_id=?', [req['run_id'], req['id']], True)
         path = Path(run['log']) if run and run.get('log') else None
+        if path and (not re.fullmatch(r'[a-f0-9]{32}', run['id']) or path != ROOT / 'logs' / (run['id'] + '.log')):
+            raise RuntimeError('日志路径不属于本工具运行记录')
         if not path or not path.exists():
             return ''
+        storage.private_file(path)
         with path.open('rb') as log:
             log.seek(max(0, path.stat().st_size - 65536))
             return log.read().decode(errors='replace')
@@ -955,6 +948,9 @@ def dispatch(req):
     if action == 'project_delete_preview':
         return project_delete_preview(req['id'])
     with mutation_lock():
+        if action == 'capture_policy':
+            import capture
+            return capture.set_policy(req['cwd'], req['enabled'])
         if action == 'project_rename':
             return rename_project(req['id'], req.get('name'))
         if action == 'project_delete':
@@ -990,15 +986,8 @@ def dispatch(req):
             write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['watcher', json.dumps(req['watcher'])])
             return True
         if action == 'cleanup':
-            before = timestamp() - int(req.get('days', 30)) * 86400
-            rows = query('SELECT id,log FROM runs WHERE ended IS NOT NULL AND ended<?', [before])
-            for row in rows:
-                if row['log']:
-                    for suffix in ('', '.1', '.2'):
-                        Path(row['log'] + suffix).unlink(missing_ok=True)
-            write('DELETE FROM runs WHERE ended IS NOT NULL AND ended<?', [before])
-            write('DELETE FROM operations WHERE ended IS NOT NULL AND ended<?', [before])
-            return {'removed_runs': len(rows)}
+            import maintenance
+            return maintenance.cleanup(sys.modules[__name__], req.get('days', 30))
         raise ValueError('未知请求：' + action)
 
 
