@@ -5,6 +5,7 @@ Never reads transcripts or process environments. Commands/output are inspected o
 in memory for Docker identities; persisted events use an explicit metadata whitelist.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import fcntl
 import hashlib
@@ -165,8 +166,8 @@ def load_events():
     return result
 
 
-def disabled_projects():
-    row = engine.query('SELECT value FROM metadata WHERE key=?', ['capture_disabled_cwds'], True)
+def disabled_projects(read=engine.query):
+    row = read('SELECT value FROM metadata WHERE key=?', ['capture_disabled_cwds'], True)
     return json.loads(row['value']) if row else []
 
 
@@ -430,6 +431,7 @@ def record_process(event, item, ports, cwd=None, table=None):
 
 def record_container(event, obj):
     cid = obj['Id']
+    compose_specs = []
     for row in engine.query('SELECT s.id,s.spec,p.auto_scan,p.cwd FROM services s JOIN projects p '
                             'ON p.id=s.project_id WHERE kind IN (?,?)', ['container', 'compose']):
         spec = json.loads(row['spec'])
@@ -437,12 +439,17 @@ def record_container(event, obj):
             if row['auto_scan'] and row['cwd'] == str(Path(event['cwd']).resolve()) and spec.get('management') == 'observed':
                 engine.reconcile_docker(engine.service(row['id']), [obj])
             return
-        labels = obj['Config'].get('Labels') or {}
-        if spec.get('management') != 'observed' and spec.get('compose_project') == labels.get('com.docker.compose.project') and spec.get('member') == labels.get('com.docker.compose.service'):
-            return
-    proj = engine.project(event['cwd'])
+        if spec.get('file') and spec.get('compose_project') and spec.get('member'):
+            compose_specs.append(spec)
     labels = obj['Config'].get('Labels') or {}
     group = labels.get('com.docker.compose.project')
+    member = labels.get('com.docker.compose.service')
+    if group and member:
+        files = engine.compose_config_paths(labels.get('com.docker.compose.project.config_files'))
+        if any(spec['compose_project'] == group and spec['member'] == member
+               and files == {spec['file']} for spec in compose_specs):
+            return
+    proj = engine.project(event['cwd'])
     sid = 'observed-docker-' + hashlib.sha256(cid.encode()).hexdigest()[:24]
     spec = {'cwd': event['cwd'], 'container_id': cid, 'source': 'global_hook', 'management': 'observed',
             'session_id': event.get('session_id'), 'tool_use_id': event.get('tool_use_id'),
@@ -490,7 +497,7 @@ def collect_containers(events, policies):
         for obj in engine.container_observation(*ids) if ids else []:
             if hint['type'] != 'container':
                 labels = obj['Config'].get('Labels') or {}
-                files = {str(Path(f).resolve()) for f in (labels.get('com.docker.compose.project.config_files') or '').split(',') if f}
+                files = engine.compose_config_paths(labels.get('com.docker.compose.project.config_files'))
                 if files != set(hint['files']):
                     continue
                 if hint.get('project') and labels.get('com.docker.compose.project') != hint['project']:
@@ -642,21 +649,35 @@ def collect_once(tracked, first_seen, events=None):
         docker_error = None
     except Exception as exc:
         docker_error = record_failure('docker', exc)
-    for row in enabled_observed:
-        if json.loads(row['spec']).get('management') == 'observed':
-            try:
-                expected = engine.observation_token(by_project.get(row['project_id']))
-                engine.observe(row['id'], automatic=True, expected=expected)
-            except ValueError:
-                if engine.query('SELECT id FROM services WHERE id=?', [row['id']], True):
-                    raise
     return tracked, first_seen, docker_error
+
+
+class ObservationQueue:
+    """Keep at most one status pass in flight without blocking capture checkpoints."""
+    def __init__(self, executor):
+        self.executor = executor
+        self.pending = None
+        self.next_scan = 0
+
+    def tick(self):
+        from observation import observe_due
+
+        if self.pending is not None:
+            if not self.pending.done():
+                return
+            previous, self.pending = self.pending, None
+            previous.result()
+        now = time.monotonic()
+        if now >= self.next_scan:
+            self.pending = self.executor.submit(observe_due, observed_only=True)
+            self.next_scan = now + IDLE_INTERVAL
 
 
 def collect():
     # Keep a connection open without a transaction so short-lived readers do not
     # repeatedly tear down and recreate the database's WAL and shared memory.
-    with closing(engine.database()), (engine.ROOT / 'capture.lock').open('a') as lock:
+    with closing(engine.database()), (engine.ROOT / 'capture.lock').open('a') as lock, \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix='capture-observation') as executor:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -669,6 +690,7 @@ def collect():
         events, event_revision = [], None
         next_event_reload = next_heartbeat = 0
         last_error = None
+        observations = ObservationQueue(executor)
         while True:
             error = None
             active = bool(tracked)
@@ -684,6 +706,7 @@ def collect():
                     event_revision = revision
                     next_event_reload = now + 60
                 tracked, first_seen, error = collect_once(tracked, first_seen, events)
+                observations.tick()
                 wall_time = time.time()
                 active = bool(tracked) or any(recent_docker_event(event, wall_time) for event in events)
             except Exception as exc:

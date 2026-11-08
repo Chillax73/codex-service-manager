@@ -17,12 +17,14 @@ final class Store: ObservableObject {
     @Published var filter: ServiceListStatus?
     @Published var busy = false
     @Published var refreshing = false
+    @Published private(set) var observationUnavailable = false
     @Published var error: String? = nil
     @Published var notice = ""
     @Published var logs = ""
     @Published var logRunID: String? = nil
     @Published var history: [[String: Any]] = []
     @Published var watcher: [String: Any] = [:]
+    @Published var lastCodexExit: [String: Any] = [:]
     @Published var capture: [String: Any] = [:]
     @Published var captureDiagnostic: [String: Any] = [:]
     @Published var discovery: [String: Any] = [:]
@@ -30,8 +32,19 @@ final class Store: ObservableObject {
     var onRefresh: (() -> Void)?
     var revision = 0
     private var queuedRefresh: String?
+    private var queuedPriority = false
+    private var refreshGeneration = 0
+    private var manualRefreshInFlight = false
     private var lastRefreshStarted = -Double.infinity
+    private weak var window: NSWindow?
+    private let snapshotConnection = CachedSnapshotConnection()
+    private var windowVisible: Bool {
+        window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden
+    }
     var hasPausedServices: Bool { services.contains { $0.observationPaused } }
+    var hasCachedStates: Bool {
+        observationUnavailable || services.contains { $0.cacheState != "recent" }
+    }
     var runningCount: Int { services.filter { $0.running }.count }
     var filtered: [ServiceItem] {
         services.filter { item in
@@ -45,16 +58,28 @@ final class Store: ObservableObject {
     var selected: ServiceItem? { services.first { $0.id == selectedService } }
     var currentProject: ProjectItem? { projects.first { $0.id == selectedProject } }
     func start(window: NSWindow) {
+        self.window = window
         ensureWatcher()
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self, weak window] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            let visible = window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden
-            if visible || ProcessInfo.processInfo.systemUptime - self.lastRefreshStarted >= 10 {
+            if self.windowVisible || ProcessInfo.processInfo.systemUptime - self.lastRefreshStarted >= 10 {
                 self.refresh()
             }
         }
         timer?.tolerance = 0.2
+    }
+    func stop() {
+        timer?.invalidate()
+        snapshotConnection.close()
+    }
+
+    func cacheCaption(_ item: ServiceItem) -> String? {
+        if item.observationPaused { return "已暂停自动扫描 · " + checkedLabel(item.lastCheckedAt) }
+        if item.lastCheckedAt == nil { return "尚未检查" }
+        if observationUnavailable || item.cacheState == "expired" {
+            return "状态可能过期 · " + checkedLabel(item.lastCheckedAt)
+        }
+        return nil
     }
     func ensureWatcher() {
         let process = Process()
@@ -65,25 +90,45 @@ final class Store: ObservableObject {
     }
     private func finishRefresh() {
         refreshing = false
+        flushQueuedRefresh()
+    }
+    private func flushQueuedRefresh() {
+        guard !refreshing, !busy else { return }
         if let scope = queuedRefresh {
             queuedRefresh = nil
             refresh(projectID: scope)
+        } else if queuedPriority {
+            queuedPriority = false
+            refresh(prioritize: true)
         }
     }
-    func refresh(projectID: String? = nil) {
-        guard !refreshing, !busy else {
+    func refresh(projectID: String? = nil, prioritize: Bool = false) {
+        let isManual = projectID != nil
+        guard !busy, !refreshing || (isManual && !manualRefreshInFlight) else {
             if let projectID = projectID { queuedRefresh = projectID }
+            if prioritize { queuedPriority = true }
             return
         }
+        refreshGeneration += 1
+        let generation = refreshGeneration
         refreshing = true
+        manualRefreshInFlight = isManual
         lastRefreshStarted = ProcessInfo.processInfo.systemUptime
         let requestRevision = revision
-        let request = projectID.map { ["action": "refresh", "project_id": $0] } ?? ["action": "snapshot"]
+        let visible = windowVisible
+        let priorityProject = prioritize ? selectedProject : nil
         DispatchQueue.global(qos: .utility).async {
             do {
-                let data = try rpc(request) as? [String: Any] ?? [:]
+                let data: [String: Any]
+                if let projectID = projectID {
+                    data = try rpc(["action": "refresh", "project_id": projectID]) as? [String: Any] ?? [:]
+                } else {
+                    data = try self.snapshotConnection.read(visible: visible, priorityProject: priorityProject)
+                }
                 DispatchQueue.main.async {
+                    guard generation == self.refreshGeneration else { return }
                     guard requestRevision == self.revision else { self.finishRefresh(); return }
+                    if projectID == nil { self.observationUnavailable = data["observation_available"] as? Bool != true }
                     let previousRun = self.selected?.run
                     self.applyProjectSidebar(data)
                     self.deletedProjects = (data["deleted_projects"] as? [[String: Any]] ?? []).map(DeletedProjectItem.init)
@@ -91,13 +136,13 @@ final class Store: ObservableObject {
                     self.services = (data["services"] as? [[String: Any]] ?? []).map { ServiceItem(raw: $0) }
                     self.operations = data["operations"] as? [[String: Any]] ?? []
                     self.watcher = data["watcher"] as? [String: Any] ?? [:]
+                    self.lastCodexExit = data["last_codex_exit"] as? [String: Any] ?? [:]
                     self.capture = data["capture"] as? [String: Any] ?? [:]
                     self.captureDiagnostic = data["capture_diagnostic"] as? [String: Any] ?? [:]
                     if self.selectedProject != "all", !self.projects.contains(where: { $0.id == self.selectedProject }) { self.selectedProject = "all" }
                     if let id = self.selectedService, !self.services.contains(where: { $0.id == id }) {
                         self.selectedService = nil; self.logs = ""; self.history = []; self.logRunID = nil
                     }
-                    self.finishRefresh()
                     self.onRefresh?()
                     if let currentRun = self.selected?.run,
                        (previousRun?["id"] as? String != currentRun["id"] as? String ||
@@ -105,8 +150,16 @@ final class Store: ObservableObject {
                         previousRun?["ended"] as? Double != currentRun["ended"] as? Double) {
                         self.loadDetails()
                     }
+                    self.finishRefresh()
                 }
-            } catch { DispatchQueue.main.async { self.error = error.localizedDescription; self.finishRefresh() } }
+            } catch {
+                DispatchQueue.main.async {
+                    guard generation == self.refreshGeneration else { return }
+                    if projectID == nil { self.observationUnavailable = true }
+                    else { self.error = error.localizedDescription }
+                    self.finishRefresh()
+                }
+            }
         }
     }
     func perform(_ request: [String: Any], refreshAfter: Bool = true, failure: ((String) -> Void)? = nil, completion: ((Any) -> Void)? = nil) {
@@ -122,16 +175,21 @@ final class Store: ObservableObject {
                         self.error = results.filter { $0["result"] as? String == "failed" }.map { $0["error"] as? String ?? "失败" }.joined(separator: "\n")
                     } else { self.notice = "操作已完成" }
                     completion?(result)
-                    if let scope = self.queuedRefresh, !self.refreshing {
-                        self.queuedRefresh = nil
-                        self.refresh(projectID: scope)
-                    } else if refreshAfter {
+                    self.flushQueuedRefresh()
+                    if refreshAfter && !self.refreshing {
                         self.refresh()
                     }
                     if refreshAfter, self.selected != nil { self.loadDetails() }
                 }
             } catch {
-                DispatchQueue.main.async { self.busy = false; self.notice = "操作失败"; if let failure = failure { failure(error.localizedDescription) } else { self.error = error.localizedDescription }; if refreshAfter { self.refresh() } }
+                DispatchQueue.main.async {
+                    self.busy = false
+                    self.notice = "操作失败"
+                    if let failure = failure { failure(error.localizedDescription) }
+                    else { self.error = error.localizedDescription }
+                    self.flushQueuedRefresh()
+                    if refreshAfter && !self.refreshing { self.refresh() }
+                }
             }
         }
     }

@@ -82,15 +82,32 @@ docker pull python:3.12-slim
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_docker.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_docker_failures.py
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_project_docker.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_capture_docker.py
 ```
 
 Docker/Compose 可用，测试以唯一标签隔离对象并核对原有容器状态，删除仅测试拥有的容器/卷。镜像版本标签可能更新，结果须同时保留本机具体镜像 ID。
+
+采集验收在同一状态库先手动登记一个普通容器，再通过合成 shell hook 输入采集另一个普通容器及 Compose 成员。它验证真实容器身份和去重，桌面真实回调另行验收。无需 Docker 的同库回归随 PR 的观察策略测试运行。采集夹具可以用 `CSM_CAPTURE_FIXTURE_IMAGE` 选择已缓存且提供 `/bin/sh` 和 `sleep` 的镜像，容器只运行休眠任务。
 
 `.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名、隐私扫描和版本检查，并执行本文的基础回归及项目栏、扫描策略和服务配置测试。核心采集使用 `--suite core`（20 项）。独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 上手动验证 Docker/Compose、容器失败场景和容器项目的改名、删除及恢复。应用构建目标为 macOS。工作流只读访问仓库，原始证据留在运行环境。
 
 真实主窗口、菜单栏与实际 Codex 退出继续使用 [验收索引](../specs/001-service-manager/acceptance.md) 在解锁桌面操作；引擎中的合成策略测试只能验证规则，不是实际退出证据。
 
+服务生命周期变更的 [验收记录](results/SERVICE_LIFECYCLE.md) 包含同库 Docker 采集、故障注入、服务回收及原生窗口检查。运行 `./scripts/build.sh` 后，可用 `PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_lifecycle_native.py` 复验一次性 macOS 应用的窗口关闭、退出策略、心跳和结果持久化。
+
 ## 快照性能基线
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot_modes.py --image python:3.12-slim --output .test-state/snapshot-samples.json
+```
+
+同负载对照使用真实 macOS 窗口、退出观察器和采集器。260 条登记固定为 196 条暂停且已结束、36 条开启且已结束、19 个受管休眠任务、1 个观察任务、4 个带回环 HTTP 检查的受管任务、4 个 Docker 容器（其中 1 个观察对象）。默认每次预热 8 秒，分别采样窗口、菜单栏及仅后台 24 秒，重建夹具重复 3 次。容器使用支持 `/bin/sh` 和 `sleep` 的本机缓存镜像，禁止拉取和端口发布。所有对象在独立状态目录，仅清理夹具的进程及唯一标签容器。
+
+原始记录包含界面应用快照耗时、三类状态变化的可见延迟，以及管理器、观察器、采集器和子进程的计数。CPU 汇总常驻管理进程及其已回收子进程，写入按 macOS 进程归因，合并短命 Python 的退出计数。测试专用的窗口切换和计数记录对两版本相同。业务夹具与 Docker 守护进程自身的资源不计入管理器开销。
+
+窗口可见时，以观察进程退出 8 秒、容器状态变化 14 秒、HTTP 健康变化 11 秒作为这组夹具的可见延迟预算。它们覆盖按类型调度、探测耗时和界面下一次取数。旧版用同一流程采集后再构建新版。新版可追加 `--verify-native`，在采样结束后检查长连接进程复用、重开窗口、断线提示与恢复、手动刷新及日志选择。
+
+本次三轮前后对照见 [快照与后台探测验收](results/SNAPSHOT_PROBING.md)。
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot.py --counts 5 20 50 --samples 3

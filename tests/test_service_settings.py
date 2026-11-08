@@ -1,4 +1,5 @@
 import json
+from unittest.mock import Mock
 import sqlite3
 import sys
 import tempfile
@@ -102,6 +103,57 @@ class ServiceSettingsTest(unittest.TestCase):
         self.assertTrue(engine.cached_observation('s')['has_pending_configuration'])
         self.assertNotIn('private-command', json.dumps(self.rpc('history')))
         self.assertNotIn('private-command', json.dumps(engine.query('SELECT * FROM operations')))
+
+    def test_pre_spawn_errors_end_run_and_allow_retry(self):
+        initial = self.register()
+        self.rpc('service_configure', env={'CSM_TEST_NEW': 'private-spawn'})
+        failure = OSError('private-spawn')
+        for target, name in ((engine, 'open'), (engine.subprocess, 'Popen')):
+            with self.subTest(name=name), patch.object(target, name, create=True, side_effect=failure):
+                with self.assertRaisesRegex(RuntimeError, '请查看本机日志'):
+                    self.rpc('start')
+                run = engine.latest('s')
+                self.assertEqual(run['state'], 'failed')
+                self.assertIsNotNone(run['ended'])
+                self.assertTrue(engine.cached_observation('s')['has_pending_configuration'])
+                self.assertEqual(engine.service('s')['spec'], initial['spec'])
+                self.assertNotIn('private-spawn', json.dumps(self.rpc('history')))
+        def complete(*args, **kwargs):
+            engine.set_run(engine.latest('s')['id'], state='succeeded', ended=engine.timestamp())
+            return Mock()
+        with patch.object(engine.subprocess, 'Popen', side_effect=complete):
+            started = self.rpc('start')
+        self.assertNotEqual(started['run']['id'], run['id'])
+        self.assertFalse(started['has_pending_configuration'])
+        self.assertEqual(len(self.rpc('history')), 3)
+
+    def test_spawned_but_unconfirmed_run_cannot_be_restarted_or_signalled(self):
+        self.register()
+        with patch.object(engine.subprocess, 'Popen', return_value=Mock()), \
+                patch.object(engine.time, 'monotonic', side_effect=[0, 0, 9]):
+            with self.assertRaisesRegex(RuntimeError, '启动确认超时'):
+                self.rpc('start')
+        run = engine.latest('s')
+        self.assertIsNone(run['ended'])
+        self.assertEqual(run['state'], 'unknown')
+        with patch.object(engine.os, 'kill') as kill:
+            with self.assertRaisesRegex(RuntimeError, '拒绝启动第二个副本'):
+                self.rpc('start')
+            with self.assertRaisesRegex(RuntimeError, '监督进程身份无法确认'):
+                self.rpc('stop')
+            kill.assert_not_called()
+        engine.set_run(run['id'], state='starting', error=None)
+        self.assertEqual(engine.observe('s')['state'], 'unknown')
+        self.assertIsNone(engine.latest('s')['ended'])
+
+    def test_supervisor_exit_does_not_overwrite_a_concurrent_completion(self):
+        self.register()
+        def exited():
+            engine.set_run(engine.latest('s')['id'], state='succeeded', ended=engine.timestamp(), exit_code=0)
+            return 0
+        with patch.object(engine.subprocess, 'Popen', return_value=Mock(poll=exited)):
+            self.assertEqual(self.rpc('start')['state'], 'succeeded')
+        self.assertEqual(engine.latest('s')['exit_code'], 0)
 
     def test_delete_rechecks_stale_preview_and_never_signals(self):
         self.register()

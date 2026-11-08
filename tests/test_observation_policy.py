@@ -127,6 +127,37 @@ class ObservationPolicyTest(unittest.TestCase):
             self.assertEqual(fresh['state'], 'unknown')
             self.assertTrue(fresh['observation_paused'])
 
+    def test_docker_capture_coexists_with_manual_registration_in_same_database(self):
+        def container(letter, labels=None):
+            return {'Id': letter * 64, 'Name': '/' + letter,
+                    'Config': {'Labels': labels or {}}, 'NetworkSettings': {'Ports': {}},
+                    'State': {'Running': True, 'Status': 'running'}}
+
+        a, b = (self.projects[name] for name in ('a', 'b'))
+        managed = container('a')
+        with patch.object(engine, 'container_inspect', return_value=managed):
+            registered = engine.dispatch({'action': 'register_container', 'container_id': managed['Id'],
+                                          'project_id': a['id']})
+        event = {'cwd': b['cwd']}
+        capture.record_container(event, managed)
+        capture.record_container(event, container('b'))
+        capture.record_container({'cwd': a['cwd']}, container('b'))
+        file = str(Path(a['cwd']) / 'compose.yaml')
+        engine.record_spec('compose', a, 'web', 'compose',
+                           {'file': file, 'compose_project': 'shared', 'member': 'web'})
+        labels = {'com.docker.compose.project': 'shared', 'com.docker.compose.service': 'web'}
+        config_key = 'com.docker.compose.project.config_files'
+        capture.record_container(event, container('c', {**labels, config_key: file}))
+        capture.record_container(event, container('d', {**labels, config_key: b['cwd'] + '/compose.yaml'}))
+        # The explicit returned ID and event establish ownership even without a Compose config label.
+        capture.record_container(event, container('e', labels))
+        rows = engine.query("SELECT * FROM services WHERE kind='container'")
+        owners = {json.loads(row['spec'])['container_id']: row['project_id'] for row in rows}
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(owners, {k * 64: owner for k, owner in
+                                 [('a', a['id']), ('b', b['id']), ('d', b['id']), ('e', b['id'])]})
+        self.assertEqual(engine.service(registered['id'])['spec']['source'], 'explicit_adoption')
+
     def test_collector_isolates_paused_project_and_resumes_verified_tracking(self):
         self.toggle('a', False)
         events = [{'id': name, 'cwd': self.projects[name]['cwd'], 'shell': {'pid': pid, 'birth': name}}

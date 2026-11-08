@@ -269,7 +269,7 @@ struct MainView: View {
                                     Text(item.typeName + " · " + item.managementSummary).font(.caption).foregroundStyle(.secondary)
                                     HStack(spacing: 6) {
                                         let status = item.listStatus
-                                        StatusBadge(state: status.rawValue, title: status.title)
+                                        StatusBadge(state: status.rawValue, title: item.cacheState == "pending" ? "等待检查" : status.title)
                                         if status != .attention && needsAttention(item) {
                                             Image(systemName: "exclamationmark.triangle.fill")
                                                 .foregroundStyle(.orange)
@@ -277,8 +277,8 @@ struct MainView: View {
                                                 .help("需关注，查看服务详情")
                                         }
                                     }
-                                    if item.observationPaused {
-                                        Text("上次已知 · " + checkedLabel(item.lastCheckedAt)).font(.caption).foregroundStyle(.secondary)
+                                    if let caption = store.cacheCaption(item) {
+                                        Text(caption).font(.caption).foregroundStyle(.secondary)
                                     }
                                     if let url = item.url { Text(url).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1) }
                                 }
@@ -290,7 +290,11 @@ struct MainView: View {
                 Divider()
                 HStack {
                     if store.busy { ProgressView().controlSize(.small) }
-                    Text(store.notice.isEmpty ? (store.refreshing ? "正在更新状态…" : "每 2 秒检查开启扫描的项目") : store.notice)
+                    if store.observationUnavailable {
+                        Text("后台状态检查暂不可用 · 显示上次结果").foregroundStyle(.orange)
+                    } else {
+                        Text(store.notice.isEmpty ? (store.refreshing ? "正在更新状态…" : "显示最近检查结果") : store.notice)
+                    }
                     Spacer()
                     if let id = store.recentlyDeletedProject { Button("撤销删除") { store.restoreProject(id) }.disabled(store.busy) }
                     Image(systemName:store.watcher["alive"] as? Bool == true ? "eye" : "eye.slash")
@@ -308,7 +312,7 @@ struct MainView: View {
                             .menuStyle(.borderlessButton).fixedSize().help("服务操作")
                     }
                     HStack {
-                        StatusBadge(state:item.state)
+                        StatusBadge(state:item.state, title: item.cacheState == "pending" ? "等待检查" : nil)
                         StatusBadge(state:item.health,prefix:"健康 · ")
                     }.font(.subheadline)
                     HStack {
@@ -320,9 +324,11 @@ struct MainView: View {
                             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url,forType:.string) } label: { Image(systemName:"doc.on.doc") }.help("复制地址")
                         }
                     }
-                    if item.observationPaused {
-                        Text("已暂停自动扫描 · " + checkedLabel(item.lastCheckedAt))
+                    if let caption = store.cacheCaption(item) {
+                        Text(caption)
                             .font(.caption).foregroundStyle(.secondary)
+                    } else if let checked = item.lastCheckedAt {
+                        Text(checkedLabel(checked)).font(.caption).foregroundStyle(.secondary)
                     }
                     if item.hasPendingConfiguration {
                         Text("配置将在下次成功启动时生效").font(.caption).foregroundStyle(.secondary)
@@ -986,6 +992,7 @@ struct SettingsView: View {
     @ObservedObject var store:Store
     @Environment(\.dismiss) var dismiss
     @State var days = "30"
+    @State private var showDeletedServices = false
 
     var body:some View {
         ScrollView {
@@ -997,18 +1004,46 @@ struct SettingsView: View {
                 Divider()
                 retentionSettings
                 deletedProjectSettings
+                Button("已删除服务…") { showDeletedServices = true }
                 Button("打开数据目录") {NSWorkspace.shared.open(URL(fileURLWithPath:statePath))}
                 Text("关闭主窗口继续管理。退出本应用保留服务，退出观察器继续运行。系统关机时不保证停止完成。").font(.caption).foregroundStyle(.secondary)
                 HStack {Spacer();Button("完成") {dismiss()}}
             }.padding(26)
         }.frame(width:580,height:640)
+            .sheet(isPresented: $showDeletedServices) { DeletedServicesView(store: store) }
     }
 
     @ViewBuilder private var watcherSettings:some View {
         Text("退出观察器：" + (store.watcher["alive"] as? Bool == true ? "运行中" : "不可用"))
         Text("目标应用：" + (store.watcher["bundle_ids"] as? [String] ?? []).joined(separator:", ")).font(.caption.monospaced())
         if let error = store.watcher["error"] as? String, !error.isEmpty {Text(error).foregroundStyle(.orange)}
+        lastExitResult
         Button("恢复退出观察器") {store.ensureWatcher();store.refresh()}
+    }
+
+    @ViewBuilder private var lastExitResult: some View {
+        let result = store.lastCodexExit
+        if !result.isEmpty {
+            Text("最近一次退出策略 · " + dateLabel(result["event_at"])).font(.subheadline.weight(.semibold))
+            switch result["status"] as? String {
+            case "completed":
+                let failed = result["failed"] as? Int ?? 0
+                Text("成功 \(result["succeeded"] as? Int ?? 0) · 跳过 \(result["skipped"] as? Int ?? 0) · 失败 \(failed)")
+                    .foregroundStyle(failed > 0 ? Color.orange : Color.secondary)
+                ForEach((result["failures"] as? [[String: String]] ?? []), id: \.self) { failure in
+                    Text("\(failure["name"] ?? "服务")：\(failure["error"] ?? "停止失败")").font(.caption).foregroundStyle(.orange)
+                }
+                ForEach(Array((result["skip_reasons"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, skip in
+                    Text("跳过 \(skip["count"] as? Int ?? 0) 项 · \(skip["reason"] as? String ?? "")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            case "unconfirmed":
+                Text(result["reason"] as? String ?? "退出策略结果未确认").foregroundStyle(.orange)
+            default:
+                Text(store.watcher["alive"] as? Bool == true ? "正在执行，结果尚未确认" : "退出策略结果未确认")
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     @ViewBuilder private var captureSettings:some View {
@@ -1075,6 +1110,132 @@ struct SettingsView: View {
     }
 }
 
+private struct DeletedServicesView: View {
+    @ObservedObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @State private var entries: [[String: Any]] = []
+    @State private var days = "30"
+    @State private var preview: PurgePreview?
+    @State private var loading = false
+    @State private var message = ""
+
+    private struct PurgePreview: Identifiable {
+        let ids: [String]
+        let days: Int
+        let retryCount: Int
+        let invalid: Int
+        var id: String { ids.joined(separator: ",") }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("已删除服务").font(.title2.weight(.semibold))
+            Text("恢复原登记和历史，不启动服务。原项目缺失或服务已重新登记时，回收记录会保留。")
+                .font(.callout)
+            if loading { ProgressView().controlSize(.small) }
+            if entries.isEmpty && !loading {
+                Text("没有已删除的服务。").foregroundStyle(.secondary)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(entries.enumerated()), id: \.offset) { _, item in
+                        archiveRow(item)
+                    }
+                }
+            }.frame(minHeight: 150)
+            Text("清理按删除日期计算，仅移除预览选中的服务归档和可确认归属的本机日志。")
+                .font(.caption).foregroundStyle(.secondary)
+            if !message.isEmpty { Text(message).font(.callout).textSelection(.enabled) }
+            HStack {
+                TextField("保留天数", text: $days).frame(width: 85)
+                Button("预览清理") { previewCleanup() }
+                    .disabled(loading || store.busy || !(1...36500).contains(Int(days) ?? 0))
+                Spacer()
+                Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22).frame(width: 540, height: 410)
+        .onAppear(perform: load)
+        .sheet(item: $preview) { plan in
+            VStack(alignment: .leading, spacing: 14) {
+                Text("永久清理已删除服务").font(.headline)
+                Text("将清理 \(plan.ids.count) 条已删除服务记录。保留期限为 \(plan.days) 天，其中 \(plan.retryCount) 条为此前未完成的清理。")
+                Text("同时移除属于这些记录且未被引用的本机日志。跳过 \(plan.invalid) 条无法读取的归档。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("取消") { preview = nil }
+                    Button("确认清理", role: .destructive) { purge(plan) }.disabled(store.busy)
+                }
+            }.padding(22).frame(width: 425)
+        }
+    }
+
+    private func archiveRow(_ item: [String: Any]) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item["name"] as? String ?? "服务").font(.subheadline.weight(.semibold))
+                Text((item["project"] as? String ?? "原项目不存在") + " · " + dateLabel(item["deleted_at"]))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if item["status"] as? String == "recoverable", let id = item["id"] as? String {
+                Button("恢复服务") { restore(id) }.disabled(loading || store.busy)
+            } else {
+                Text(item["status"] as? String == "purging" ? "清理未完成" : "归档不可用")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func load() {
+        loading = true
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                let result = try rpc(["action": "service_trash_list"]) as? [[String: Any]] ?? []
+                DispatchQueue.main.async { entries = result; loading = false }
+            } catch {
+                DispatchQueue.main.async { message = error.localizedDescription; loading = false }
+            }
+        }
+    }
+
+    private func previewCleanup() {
+        guard let retention = Int(days) else { return }
+        store.perform(["action": "service_trash_purge_preview", "days": retention], refreshAfter: false,
+                      failure: { message = $0 }, completion: { result in
+            guard let data = result as? [String: Any], let ids = data["ids"] as? [String] else { return }
+            let invalid = data["invalid"] as? Int ?? 0
+            if ids.isEmpty {
+                message = "没有符合条件的归档。跳过 \(invalid) 条无法读取的归档。"
+            } else {
+                preview = PurgePreview(ids: ids, days: retention, retryCount: data["retry_count"] as? Int ?? 0,
+                                       invalid: invalid)
+            }
+        })
+    }
+
+    private func restore(_ id: String) {
+        store.perform(["action": "service_restore", "id": id], failure: { message = $0 }, completion: { _ in
+            message = "已恢复服务登记和历史。"
+            load()
+        })
+    }
+
+    private func purge(_ plan: PurgePreview) {
+        preview = nil
+        store.perform(["action": "service_trash_purge", "days": plan.days, "ids": plan.ids], refreshAfter: false,
+                      failure: { message = $0; load() }, completion: { result in
+            guard let data = result as? [String: Int] else { return }
+            message = "已清理 \(data["removed_archives"] ?? 0) 条归档及 \(data["removed_logs"] ?? 0) 个日志文件，跳过 \(data["skipped_logs"] ?? 0) 个日志。"
+            if let failed = data["failed_archives"], failed > 0 {
+                message += " \(failed) 条归档清理未完成，可重新预览后重试。"
+            }
+            load()
+        })
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let store = Store()
     var window:NSWindow!
@@ -1099,7 +1260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showWindow() {
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps:true)
-        store.refresh()
+        store.refresh(prioritize: true)
     }
     func installMainMenu() {
         let main = NSMenu()
@@ -1144,13 +1305,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.async { [weak self] in self?.status.button?.performClick(nil) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
+    func applicationWillTerminate(_ notification: Notification) { store.stop() }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool {
         if !flag { showWindow() }
         return true
     }
     func menuWillOpen(_ menu:NSMenu) {
         menu.removeAllItems()
-        let cached = store.hasPausedServices ? "（含上次已知状态）" : ""
+        let cached = store.hasCachedStates ? "（含上次已知状态）" : ""
         let heading = NSMenuItem(title: "\(store.runningCount) 个服务运行中" + cached, action: nil, keyEquivalent: "")
         menu.addItem(heading)
         menu.addItem(.separator())
