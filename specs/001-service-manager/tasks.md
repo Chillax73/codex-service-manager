@@ -1,6 +1,6 @@
 # 实施任务
 
-当前体验变更及后续项目菜单、空闲资源优化的任务见 [OpenSpec 任务](../../openspec/changes/improve-v0-0-3-experience/tasks.md)。
+体验变更及后续项目菜单、空闲资源优化的任务见 [OpenSpec 归档任务](../../openspec/changes/archive/2026-11-08-improve-v0-0-3-experience/tasks.md)。
 
 ## 审查修复（2026-10-27）
 

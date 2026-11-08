@@ -1,5 +1,11 @@
 {
   "transport": "single JSON request on stdin; single JSON response on stdout; local child process",
+  "desktop_snapshot_transport": {
+    "mode": "snapshot-worker",
+    "framing": "newline-delimited JSON over the app-owned child process stdin and stdout",
+    "request": {"action": "snapshot_cached", "visible": true, "priority_project": "optional-project-id-or-all"},
+    "result": "read-only service snapshot with per-service cache_state and observation_available"
+  },
   "response": {
     "ok": true,
     "result": "action-specific JSON"

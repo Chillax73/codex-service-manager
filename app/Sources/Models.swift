@@ -44,6 +44,9 @@ struct ServiceItem: Identifiable {
     var observed: Bool { spec["management"] as? String == "observed" }
     var capabilityReason: String? { raw["capability_reason"] as? String }
     var observationPaused: Bool { raw["observation_paused"] as? Bool ?? false }
+    var cacheState: String {
+        raw["cache_state"] as? String ?? (observationPaused ? "paused" : lastCheckedAt == nil ? "pending" : "recent")
+    }
     var lastCheckedAt: Double? { raw["last_checked_at"] as? Double }
     var hasPendingConfiguration: Bool { raw["has_pending_configuration"] as? Bool ?? false }
     var configuration: [String: Any] { raw["configuration"] as? [String: Any] ?? spec }

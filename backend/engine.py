@@ -8,6 +8,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -314,22 +315,40 @@ def start_process(item):
     if occupied:
         set_run(run_id, ended=timestamp(), state='failed', error='端口已占用：' + str(occupied))
         raise RuntimeError('端口已占用：' + str(occupied))
-    with open(ROOT / 'supervisor.log', 'ab', buffering=0) as output:
-        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--root', str(ROOT),
-            '_supervise', run_id], stdin=subprocess.DEVNULL, stdout=output, stderr=output,
-            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, start_new_session=True, close_fds=True)
-    until = timestamp() + 8
-    while timestamp() < until:
+    process = None
+    try:
+        with open(ROOT / 'supervisor.log', 'ab', buffering=0) as output:
+            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--root', str(ROOT),
+                '_supervise', run_id], stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, start_new_session=True, close_fds=True)
+    except Exception as exc:
+        message = private_error(spec, exc)
+        if process is None:
+            write("UPDATE runs SET ended=?,state='failed',error=? WHERE id=? AND state='starting' AND ended IS NULL",
+                  [timestamp(), message, run_id])
+        raise RuntimeError(message) from None
+
+    unconfirmed = None
+    until = time.monotonic() + 8
+    while time.monotonic() < until:
         run = latest(item['id'])
         if run['state'] != 'starting':
-            if run['state'] == 'failed':
-                raise RuntimeError(run['error'] or '启动失败，请查看日志')
-            return observe(item['id'])
+            break
         if process.poll() is not None:
-            set_run(run_id, ended=timestamp(), state='failed', error='监督进程在启动确认之前退出')
-            raise RuntimeError('监督进程启动失败')
+            unconfirmed = '监督进程在启动确认之前退出；无法排除业务进程已启动'
+            break
         time.sleep(.05)
-    raise TimeoutError('监督器启动超时，记录保留；请检查状态')
+    else:
+        unconfirmed = '监督器启动确认超时；无法排除业务进程已启动'
+
+    # Re-read after poll/timeout so a completed supervisor write is never overwritten.
+    if unconfirmed:
+        write("UPDATE runs SET state='unknown',error=? WHERE id=? AND state='starting' AND ended IS NULL",
+              [unconfirmed, run_id])
+    run = latest(item['id'])
+    if run['state'] in ('failed', 'unknown'):
+        raise RuntimeError(run['error'] or '启动失败，请查看日志')
+    return observe(item['id'])
 
 
 def stop_process(item, force=False):
@@ -391,7 +410,7 @@ def supervise(run_id):
                 rotate_write(Path(run['log']), data)
         reader = threading.Thread(target=capture, daemon=True)
         reader.start()
-        set_run(run_id, state='running', runtime=runtime)
+        set_run(run_id, state='running', runtime=runtime, error=None)
         while True:
             # poll() reaps the leader; only signal groups while the leader is still alive, or
             # verified children from the known group remain. No external stale-PID signalling.
@@ -434,11 +453,11 @@ def supervise(run_id):
                 ended=timestamp() if child is None else None, error=private_error(spec, exc))
 
 
-def container_inspect(cid):
-    return json.loads(docker('inspect', cid, timeout=8))[0]
+def container_inspect(cid, *, timeout=8):
+    return json.loads(docker('inspect', cid, timeout=timeout))[0]
 
 
-def container_observation(*ids):
+def container_observation(*ids, timeout=8):
     """Docker observation needs identities/status/ports, never Config.Env or health logs."""
     template = '{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}},' \
         '"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},' \
@@ -447,23 +466,37 @@ def container_observation(*ids):
         '"com.docker.compose.project":{{json (index .Config.Labels "com.docker.compose.project")}},' \
         '"com.docker.compose.service":{{json (index .Config.Labels "com.docker.compose.service")}},' \
         '"com.docker.compose.project.config_files":{{json (index .Config.Labels "com.docker.compose.project.config_files")}}}}}'
-    return [json.loads(line) for line in docker('inspect', '--format', template, *ids, timeout=8).splitlines()]
+    return [json.loads(line) for line in docker('inspect', '--format', template, *ids, timeout=timeout).splitlines()]
 
 
-def compose_command(item, *args, merge_stderr=False):
+def compose_command(item, *args, merge_stderr=False, timeout=60):
     spec = item['spec']
     return docker('compose', '-p', spec['compose_project'], '-f', spec['file'], *args,
-                  env=runtime_env(spec), cwd=spec['cwd'], timeout=60, merge_stderr=merge_stderr)
+                  env=runtime_env(spec), cwd=spec['cwd'], timeout=timeout, merge_stderr=merge_stderr)
 
 
-def containers_for(item):
+def compose_config_paths(files):
+    return {str(Path(path).resolve()) for path in (files or '').split(',') if path}
+
+
+def containers_for(item, *, budget=None):
     spec = item['spec']
+    deadline = time.monotonic() + budget if budget is not None else None
+
+    def remaining(default):
+        if deadline is None:
+            return default
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError('后台容器检查超时')
+        return min(default, left)
+
     if item['kind'] == 'container':
         if spec.get('management') == 'observed':
-            return container_observation(spec['container_id'])
-        return [container_inspect(spec['container_id'])]
-    ids = compose_command(item, 'ps', '-aq', spec['member']).splitlines()
-    result = [container_inspect(cid) for cid in ids]
+            return container_observation(spec['container_id'], timeout=remaining(8))
+        return [container_inspect(spec['container_id'], timeout=remaining(8))]
+    ids = compose_command(item, 'ps', '-aq', spec['member'], timeout=remaining(60)).splitlines()
+    result = [container_inspect(cid, timeout=remaining(8)) for cid in ids]
     for obj in result:
         labels = obj['Config'].get('Labels') or {}
         if labels.get('com.docker.compose.project') != spec['compose_project'] or labels.get('com.docker.compose.service') != spec['member']:
@@ -472,7 +505,7 @@ def containers_for(item):
         if working and str(Path(working).resolve()) != str(Path(spec['file']).parent):
             raise RuntimeError('同名 Compose 项目属于其他工作目录')
         files = labels.get('com.docker.compose.project.config_files')
-        if files and {str(Path(path).resolve()) for path in files.split(',')} != {spec['file']}:
+        if files and compose_config_paths(files) != {spec['file']}:
             raise RuntimeError('同名 Compose 项目使用其他配置文件，拒绝接管')
     return result
 
@@ -744,7 +777,7 @@ def operate(service_id, action, trigger='user'):
         raise
 
 
-def probe_observation(item, run):
+def probe_observation(item, run, *, background=False, managed_identities=None):
     objects = None
     changes = None
     problem = None
@@ -754,7 +787,7 @@ def probe_observation(item, run):
     observed = item['spec'].get('management') == 'observed'
     if item['kind'] in ('container', 'compose'):
         try:
-            objects = containers_for(item)
+            objects = containers_for(item, budget=4) if background else containers_for(item)
             can_stop = any(o['State']['Running'] for o in objects)
             state = 'running' if can_stop else 'stopped'
             run = {**(run or {}), 'runtime': docker_runtime(objects)}
@@ -788,11 +821,19 @@ def probe_observation(item, run):
     elif run and run['ended'] is None:
         try:
             runtime = run['runtime']
-            if matches(runtime.get('supervisor_pid'), runtime.get('supervisor_birth'), run['id']):
+            pid = runtime.get('supervisor_pid')
+            birth = runtime.get('supervisor_birth')
+            if managed_identities is not None and pid in managed_identities:
+                entry = managed_identities[pid]
+                verified = bool(entry and entry['birth'] == birth and run['id'] in entry['command'])
+            else:
+                verified = matches(pid, birth, run['id'])
+            if verified:
                 state = run['state']
                 can_stop = True
             else:
-                state, problem = 'unknown', '监督进程身份无法确认；服务可能仍在运行'
+                state = 'unknown'
+                problem = (run['error'] if run['state'] == 'unknown' else None) or '监督进程身份无法确认；服务可能仍在运行'
         except Exception as exc:
             state, problem = 'unknown', str(exc)
     else:
@@ -891,15 +932,18 @@ def cached_service(item, paused, cached):
                                  'last_checked_at': cached['checked_at'] if cached else None, 'state_fresh': False})
 
 
-def prepare_observation(service_id, automatic=False, expected=None):
+def prepare_observation(service_id, automatic=False, expected=None, *, background=False,
+                        managed_identities=None, started=None):
+    if started is None:
+        started = timestamp()
     item = service(service_id)
     project = observation_row(item['project_id'])
     token = observation_token(project)
     if automatic and (not project or not project['auto_scan'] or (expected is not None and expected != token)):
         return None
     run = latest(service_id)
-    started = timestamp()
-    result = probe_observation(item, run)
+    result = (probe_observation(item, run, background=True, managed_identities=managed_identities)
+              if background else probe_observation(item, run))
     return item, run, token, started, timestamp(), result
 
 
@@ -1103,8 +1147,8 @@ SORT_KEYS = ('name', 'created_at', 'running_count')
 SORT_DIRECTIONS = ('asc', 'desc')
 
 
-def project_sort_preferences():
-    row = query('SELECT value FROM metadata WHERE key=?', ['project_sidebar_preferences'], True)
+def project_sort_preferences(read=query):
+    row = read('SELECT value FROM metadata WHERE key=?', ['project_sidebar_preferences'], True)
     if row:
         try:
             value = json.loads(row['value'])
@@ -1134,13 +1178,15 @@ def sort_projects(projects, preferences):
     return ordered
 
 
-def project_sidebar(observations=None):
+def project_sidebar(observations=None, *, read=query, registrations=None):
     import capture
-    disabled = set(capture.disabled_projects())
-    projects = query('SELECT * FROM projects')
-    registrations = query('SELECT id,project_id,spec FROM services')
+    disabled = set(capture.disabled_projects(read))
+    projects = read('SELECT * FROM projects')
+    if registrations is None:
+        registrations = read('SELECT id,project_id,spec FROM services')
     occupied = {item['project_id'] for item in registrations}
-    visible = [item for item in registrations if json.loads(item['spec']).get('source') != 'internal']
+    visible = [item for item in registrations
+               if (item['spec'] if isinstance(item['spec'], dict) else json.loads(item['spec'])).get('source') != 'internal']
     occupied_visible = {item['project_id'] for item in visible}
     projects = [p for p in projects if p['id'] not in occupied or p['id'] in occupied_visible]
     if observations is None:
@@ -1163,7 +1209,7 @@ def project_sidebar(observations=None):
         checked_at = observation['last_checked_at']
         if checked_at is not None and (project['last_checked_at'] is None or checked_at > project['last_checked_at']):
             project['last_checked_at'] = checked_at
-    preferences = project_sort_preferences()
+    preferences = project_sort_preferences(read)
     return {'projects': sort_projects(projects, preferences), 'project_sort_preferences': preferences}
 
 
@@ -1245,14 +1291,30 @@ def delete_project(project_id):
             'removed_runs': preview['run_count'], 'removed_operations': preview['operation_count']}
 
 
-def deleted_projects():
+def deleted_projects(read=query):
     items = []
-    for row in query("SELECT key,value FROM metadata WHERE key GLOB 'deleted_project:*'"):
+    for row in read("SELECT key,value FROM metadata WHERE key GLOB 'deleted_project:*'"):
         archive = json.loads(row['value'])
         items.append({'id': row['key'].split(':', 1)[1], 'name': archive['project']['name'],
             'cwd': archive['project']['cwd'], 'deleted_at': archive['deleted_at'],
             'service_count': len(archive['services']), 'run_count': len(archive['runs'])})
     return sorted(items, key=lambda item: item['deleted_at'], reverse=True)
+
+
+ARCHIVE_COLUMNS = {
+    'projects': ('id', 'cwd', 'name', 'manual', 'codex_exit', 'auto_scan',
+                 'observation_revision', 'created_at', 'created_at_source', 'pinned'),
+    'services': ('id', 'project_id', 'name', 'kind', 'spec', 'keep', 'group_id',
+                 'display_name', 'created_at', 'created_at_source', 'pending_spec', 'config_revision'),
+    'runs': ('id', 'service_id', 'started', 'ended', 'state', 'exit_code', 'runtime', 'error', 'log'),
+    'operations': ('id', 'target', 'action', 'trigger', 'started', 'ended', 'result', 'error'),
+}
+
+
+def restore_archive_rows(db, table, records):
+    fields = ARCHIVE_COLUMNS[table]
+    sql = 'INSERT INTO ' + table + ' (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')'
+    db.executemany(sql, [[item[field] for field in fields] for item in records])
 
 
 def restore_project(trash_id):
@@ -1279,23 +1341,19 @@ def restore_project(trash_id):
     proj.setdefault('auto_scan', 1)
     proj.setdefault('observation_revision', 0)
     proj.setdefault('pinned', 0)
-    columns = {'projects': ('id', 'cwd', 'name', 'manual', 'codex_exit', 'auto_scan',
-                            'observation_revision', 'created_at', 'created_at_source', 'pinned'),
-        'services': ('id', 'project_id', 'name', 'kind', 'spec', 'keep', 'group_id',
-                     'display_name', 'created_at', 'created_at_source', 'pending_spec', 'config_revision'),
-        'runs': ('id', 'service_id', 'started', 'ended', 'state', 'exit_code', 'runtime', 'error', 'log'),
-        'operations': ('id', 'target', 'action', 'trigger', 'started', 'ended', 'result', 'error')}
     try:
         with database() as db:
-            for table, fields in columns.items():
-                records = [proj] if table == 'projects' else archive[table]
-                for item in records:
-                    db.execute('INSERT INTO ' + table + ' (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')',
-                               [item[field] for field in fields])
+            for table in ARCHIVE_COLUMNS:
+                restore_archive_rows(db, table, [proj] if table == 'projects' else archive[table])
             db.execute('DELETE FROM metadata WHERE key=?', ['deleted_project:' + trash_id])
     except sqlite3.IntegrityError as exc:
         raise RuntimeError('登记或历史标识已被占用，恢复已取消；现有记录和回收记录保持不变') from exc
     return {'project': project_record(proj['id']), 'restored_services': len(archive['services']), 'restored_runs': len(archive['runs'])}
+
+
+SNAPSHOT_ROWS = ('SELECT s.*,p.auto_scan AS scan,o.checked_at AS checked_at,o.projection AS projection '
+                 'FROM services s LEFT JOIN projects p ON p.id=s.project_id '
+                 'LEFT JOIN service_observations o ON o.service_id=s.id ORDER BY s.name')
 
 
 def snapshot(refresh_project=None):
@@ -1304,9 +1362,7 @@ def snapshot(refresh_project=None):
     automatic = refresh_project is None
     services = []
     probe_ids = []
-    for row in query('SELECT s.*,p.auto_scan AS scan,o.checked_at AS checked_at,o.projection AS projection '
-                     'FROM services s LEFT JOIN projects p ON p.id=s.project_id '
-                     'LEFT JOIN service_observations o ON o.service_id=s.id ORDER BY s.name'):
+    for row in query(SNAPSHOT_ROWS):
         row['spec'] = json.loads(row['spec'])
         if row['spec'].get('source') == 'internal':
             continue
@@ -1337,21 +1393,59 @@ def snapshot(refresh_project=None):
         except ValueError:
             if query('SELECT id FROM services WHERE id=?', [sid], True):
                 raise
-    watcher = query('SELECT value FROM metadata WHERE key=?', ['watcher'], True)
-    watcher = json.loads(watcher['value']) if watcher else None
-    if watcher:
-        watcher['alive'] = matches(watcher.get('pid'), watcher.get('birth'), '--watch') and timestamp() - watcher.get('updated', 0) < 20
-    capture = query('SELECT value FROM metadata WHERE key=?', ['capture'], True)
-    capture = json.loads(capture['value']) if capture else None
-    if capture:
-        capture['alive'] = matches(capture.get('pid'), capture.get('birth'), 'capture.py') and timestamp() - capture.get('updated', 0) < 20
-    diagnostic = query('SELECT value FROM metadata WHERE key=?', ['capture_diagnostic'], True)
+    return snapshot_payload(services)
+
+
+def snapshot_payload(services, *, read=query, registrations=None, component_identities=None):
+    metadata = {row['key']: json.loads(row['value']) for row in read(
+        "SELECT key,value FROM metadata WHERE key IN ('watcher','capture','capture_diagnostic','last_codex_exit')")}
+    for key, marker in (('watcher', '--watch'), ('capture', 'capture.py')):
+        entry = metadata.get(key)
+        if entry:
+            identity = (entry.get('pid'), entry.get('birth'))
+            recent = timestamp() - entry.get('updated', 0) < 20
+            entry['alive'] = bool(recent and (matches(*identity, marker) if component_identities is None
+                                             else component_identities.get(key) == identity))
     services.sort(key=lambda item: (item['state'] != 'running', -(item['created_at'] or 0), item['id']))
-    return {**project_sidebar(services), 'services': services,
-            'operations': query('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
-            'watcher': watcher, 'capture': capture,
-            'capture_diagnostic': json.loads(diagnostic['value']) if diagnostic else None,
-            'deleted_projects': deleted_projects(), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
+    return {**project_sidebar(services, read=read, registrations=registrations), 'services': services,
+            'operations': read('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
+            **{key: metadata.get(key) for key in ('watcher', 'capture', 'last_codex_exit', 'capture_diagnostic')},
+            'deleted_projects': deleted_projects(read), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
+
+
+def snapshot_cached(db=None, *, visible=True, component_identities=None):
+    import observation
+    if db is None:
+        with contextlib.closing(storage.open_snapshot_database(ROOT)) as db:
+            return snapshot_cached(db, visible=visible, component_identities=component_identities)
+
+    def read(sql, params=(), one=False):
+        rows = [dict(row) for row in db.execute(sql, params)]
+        return (rows[0] if rows else None) if one else rows
+
+    now = timestamp()
+    with db:
+        db.execute('BEGIN')
+        registrations = read(SNAPSHOT_ROWS)
+        services = []
+        for row in registrations:
+            row['spec'] = json.loads(row['spec'])
+            if row['spec'].get('source') == 'internal':
+                continue
+            paused = not row.pop('scan')
+            checked_at, projection = row.pop('checked_at'), row.pop('projection')
+            cached = {'checked_at': checked_at, 'projection': projection} if projection is not None else None
+            item = cached_service(row, paused, cached)
+            if paused:
+                item['cache_state'] = 'paused'
+            elif checked_at is None:
+                item['cache_state'] = 'pending'
+            else:
+                interval = observation.interval(row['kind'], row['spec'], item, visible)
+                item['cache_state'] = 'expired' if now - checked_at > interval + 4 else 'recent'
+            services.append(item)
+        return snapshot_payload(services, read=read, registrations=registrations,
+                                component_identities=component_identities or {})
 
 
 def batch(req, trigger='user'):
@@ -1387,6 +1481,57 @@ def end_project(req, trigger='manual'):
     if not proj[trigger]:
         return [{'result': 'skipped', 'reason': '项目未开启该结束触发'}]
     return batch({'project_id': proj['id'], 'operation': 'stop'}, trigger)
+
+
+def exit_event(req):
+    event_id = req.get('event_id', uid())
+    at = req.get('event_at', timestamp())
+    if not isinstance(event_id, str) or not re.fullmatch(r'[a-f0-9]{32}', event_id):
+        raise ValueError('退出事件标识无效')
+    if type(at) not in (int, float) or not 0 < at < math.inf:
+        raise ValueError('退出事件时间无效')
+    return {'event_id': event_id, 'event_at': at}
+
+
+def save_exit_result(event, status, **fields):
+    # Heartbeats and uncertain transport outcomes do not hold the operation lock.
+    with contextlib.closing(database()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT value FROM metadata WHERE key='last_codex_exit'").fetchone()
+        old = json.loads(row['value']) if row else None
+        if old:
+            same_event = old['event_id'] == event['event_id']
+            if same_event and (status == 'running' or old['status'] == 'completed'):
+                return False
+            if not same_event and (status == 'completed' or old['event_at'] >= event['event_at']):
+                return False
+        db.execute('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)',
+                   ['last_codex_exit', json.dumps({**event, 'status': status, **fields})])
+        return True
+
+
+def run_codex_exit(req):
+    event = exit_event(req)
+    if not save_exit_result(event, 'running'):
+        return []  # A repeated or obsolete notification must not replay service stops.
+    results = [{'project_id': p['id'], 'results': end_project({'project_id': p['id']}, 'codex_exit')}
+               for p in query('SELECT id FROM projects WHERE codex_exit=1')]
+    counts = dict(succeeded=0, skipped=0, failed=0)
+    failures = []
+    skip_reasons = {}
+    for project_result in results:
+        for result in project_result['results']:
+            counts[result['result']] += 1
+            if result['result'] == 'failed':
+                item = service(result['id'])
+                failures.append({'id': item['id'], 'name': item['display_name'] or item['name'],
+                                 'error': private_error(item['spec'], result['error'])})
+            elif result['result'] == 'skipped':
+                reason = result['reason']
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+    save_exit_result(event, 'completed', **counts, failures=failures,
+                     skip_reasons=[{'reason': reason, 'count': count} for reason, count in sorted(skip_reasons.items())])
+    return results
 
 
 def discover():
@@ -1446,6 +1591,8 @@ def dispatch(req):
     action = req['action']
     if action == 'snapshot':
         return snapshot()
+    if action == 'snapshot_cached':
+        return snapshot_cached()
     if action == 'refresh':
         project_id = req.get('project_id', 'all')
         if not isinstance(project_id, str) or not project_id:
@@ -1480,8 +1627,18 @@ def dispatch(req):
         return True
     if action == 'service_delete_preview':
         return service_delete_preview(req['id'])
+    if action in ('service_trash_list', 'service_trash_purge_preview'):
+        import service_trash
+        return service_trash.listing() if action == 'service_trash_list' else service_trash.purge_preview(req.get('days'))
     if action == 'project_delete_preview':
         return project_delete_preview(req['id'])
+    if action == 'watcher_event':
+        write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['watcher', json.dumps(req['watcher'])])
+        return True
+    if action == 'codex_exit_unconfirmed':
+        reason = ('其他操作持续占用，退出策略未开始' if req.get('busy') is True
+                  else '管理组件未返回可确认的退出策略结果')
+        return save_exit_result(exit_event(req), 'unconfirmed', reason=reason)
     with mutation_lock(wait=1 if action in ('project_scan_policy', 'project_scan_policy_batch') else 0):
         if action == 'capture_policy':
             import capture
@@ -1519,6 +1676,12 @@ def dispatch(req):
             return project_sidebar()
         if action == 'service_delete':
             return delete_service(req['id'])
+        if action == 'service_restore':
+            import service_trash
+            return service_trash.restore(req['id'])
+        if action == 'service_trash_purge':
+            import service_trash
+            return service_trash.purge(req.get('days'), req.get('ids'))
         if action == 'service_configure':
             return configure_service(req)
         if action == 'service_rename':
@@ -1545,17 +1708,13 @@ def dispatch(req):
         if action == 'end_project':
             return end_project(req)
         if action == 'codex_exit':
-            return [{'project_id': p['id'], 'results': end_project({'project_id': p['id']}, 'codex_exit')}
-                    for p in query('SELECT * FROM projects WHERE codex_exit=1')]
+            return run_codex_exit(req)
         if action == 'project_policy':
             write('UPDATE projects SET manual=?,codex_exit=? WHERE id=?',
                   [bool(req['manual']), bool(req['codex_exit']), req['id']])
             return True
         if action == 'service_keep':
             write('UPDATE services SET keep=? WHERE id=?', [bool(req['keep']), req['id']])
-            return True
-        if action == 'watcher_event':
-            write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['watcher', json.dumps(req['watcher'])])
             return True
         if action == 'cleanup':
             import maintenance
@@ -1567,7 +1726,7 @@ def main():
     global ROOT
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path)
-    parser.add_argument('mode', choices=['rpc', '_supervise'])
+    parser.add_argument('mode', choices=['rpc', '_supervise', 'snapshot-worker'])
     parser.add_argument('run_id', nargs='?')
     args = parser.parse_args()
     if args.root:
@@ -1575,12 +1734,19 @@ def main():
     if args.mode == '_supervise':
         supervise(args.run_id)
         return
+    if args.mode == 'snapshot-worker':
+        import observation
+        observation.serve()
+        return
     try:
         request = json.load(sys.stdin)
         result = dispatch(request)
         print(json.dumps({'ok': True, 'result': result}, ensure_ascii=False))
     except Exception as exc:
-        print(json.dumps({'ok': False, 'error': str(exc)}, ensure_ascii=False))
+        response = {'ok': False, 'error': str(exc)}
+        if isinstance(exc, MutationBusy):
+            response['error_code'] = 'mutation_busy'
+        print(json.dumps(response, ensure_ascii=False))
         sys.exit(1)
 
 

@@ -15,10 +15,11 @@ BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE / 'backend'))
 import capture
 import engine
-from support import stop_test_watcher
+from support import prepare_workspace, stop_test_watcher
 
 
 def main():
+    prepare_workspace()
     temporary = tempfile.TemporaryDirectory(prefix='csm-capture-docker-', dir=str(BASE / '.test-state'))
     root = Path(temporary.name); project = root / 'project'; project.mkdir()
     ownership = root / 'ownership'; ownership.mkdir()
@@ -27,8 +28,8 @@ def main():
     created = []; checks = []
     before_ids = engine.docker('ps', '-aq').splitlines()
     before = engine.container_observation(*before_ids) if before_ids else []
-    image = engine.docker('image', 'inspect', 'python:3.12-slim', '--format', '{{.Id}}')
-    capture.ensure_collector()
+    image = engine.docker('image', 'inspect', os.environ.get('CSM_CAPTURE_FIXTURE_IMAGE', 'python:3.12-slim'),
+                          '--format', '{{.Id}}')
 
     def submit(command):
         payload = {'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'session_id': tag,
@@ -60,12 +61,20 @@ def main():
 
     try:
         # No image pulls or starts of pre-existing containers.
+        manual = engine.docker('run', '-d', '--pull=never', '--label', 'csm.capture.test=' + tag,
+                               '--name', tag + '-manual', '--entrypoint', '/bin/sh', image, '-c', 'exec sleep 600')
+        managed = engine.dispatch({'action': 'register_container', 'container_id': manual, 'cwd': str(project)})
+        capture.ensure_collector()
         cid = submit('docker run -d --pull=never --label csm.capture.test=' + tag + ' --name ' + tag +
-                     ' ' + image + ' python -m http.server 8000')
+                     " --entrypoint /bin/sh " + image + " -c 'exec sleep 600'")
         created.append(cid); register_owned(cid)
         items = wait_count(1)
         item = items[0]
         assert item['spec']['container_id'] == cid and item['can_stop'] and item['can_restart'] and not item['automatic_end']
+        assert len({managed['id'], item['id']}) == 2
+        assert engine.service(managed['id'])['spec']['container_id'] == manual
+        assert engine.service(managed['id'])['project_id'] == item['project_id']
+        checks.append('同一状态库中手动登记容器与自动采集容器并存')
         checks.append('单容器工具返回 ID、归属、按能力接管且不自动结束')
         first_run = item['run']['id']
         submit('docker restart ' + cid)
@@ -79,10 +88,10 @@ def main():
         assert controlled['run']['id'] != observed_run and controlled['management'] == 'managed'
         checks.append('观察容器经管理器真实重启并升级，沿用容器及服务 ID')
         file = project / 'compose.yaml'
-        file.write_text('services:\n  one:\n    image: ' + image + '\n    pull_policy: never\n'
-                        '    command: [python, -m, http.server, "8000"]\n    labels: {csm.capture.test: ' + tag + '}\n'
-                        '  two:\n    image: ' + image + '\n    pull_policy: never\n'
-                        '    command: [python, -m, http.server, "8000"]\n    labels: {csm.capture.test: ' + tag + '}\n')
+        member = ('    image: ' + image + '\n    pull_policy: never\n'
+                  '    entrypoint: [/bin/sh, -c]\n    command: ["exec sleep 600"]\n'
+                  '    labels: {csm.capture.test: ' + tag + '}\n')
+        file.write_text('services:\n  one:\n' + member + '  two:\n' + member)
         submit('docker compose -p ' + tag + '-compose -f compose.yaml up -d')
         compose_ids = engine.docker('ps', '-aq', '--filter', 'label=com.docker.compose.project=' + tag + '-compose').splitlines()
         created.extend(compose_ids)
@@ -105,14 +114,15 @@ def main():
             engine.docker('rm', '-f', *exact)
         if (project / 'compose.yaml').exists():
             engine.docker('compose', '-p', tag + '-compose', '-f', str(project / 'compose.yaml'), 'down')
-        engine.dispatch({'action': 'stop', 'id': capture.INTERNAL_ID})
+        if engine.query('SELECT id FROM services WHERE id=?', [capture.INTERNAL_ID], True):
+            engine.dispatch({'action': 'stop', 'id': capture.INTERNAL_ID})
         stop_test_watcher(root)
         stop_test_watcher(ownership)
         after = engine.container_observation(*before_ids) if before_ids else []
         assert before == after, '原有容器身份、状态或启动时间发生变化'
         checks.append('仅清理测试资源，原有容器状态不变')
         temporary._finalizer.detach()
-    evidence = {'generated_at': time.time(), 'passed': True, 'checks': checks, 'state_root': str(root),
+    evidence = {'generated_at': time.time(), 'passed': True, 'checks': checks, 'state_root': str(root), 'image_id': image,
                 'hook_input': 'synthetic; actual Docker and Compose', 'desktop_callback_verified_by_this_test': False}
     (BASE / 'docs/evidence/capture-docker-tests.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({'passed': True, 'checks': checks}, ensure_ascii=False, indent=2))

@@ -52,3 +52,13 @@ def open_database(root):
     db = sqlite3.connect(str(root / 'manager.sqlite'), timeout=30)
     db.row_factory = sqlite3.Row
     return db
+
+
+def open_snapshot_database(root):
+    path = root / 'manager.sqlite'
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError('状态文件身份无效')
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)
+    db.row_factory = sqlite3.Row
+    return db
