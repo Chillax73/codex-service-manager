@@ -40,8 +40,63 @@ def uid():
     return uuid.uuid4().hex
 
 
+SCHEMA_VERSION = 1
+BASE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, cwd TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL, manual INTEGER NOT NULL DEFAULT 1, codex_exit INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS services(id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+      name TEXT NOT NULL, kind TEXT NOT NULL, spec TEXT NOT NULL, keep INTEGER NOT NULL DEFAULT 0,
+      group_id TEXT);
+    CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, service_id TEXT NOT NULL,
+      started REAL NOT NULL, ended REAL, state TEXT NOT NULL, exit_code INTEGER,
+      runtime TEXT NOT NULL DEFAULT '{}', error TEXT, log TEXT);
+    CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, target TEXT NOT NULL,
+      action TEXT NOT NULL, trigger TEXT NOT NULL, started REAL NOT NULL, ended REAL,
+      result TEXT, error TEXT);
+    CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS runs_service ON runs(service_id, started DESC);
+"""
+SCHEMA_V1 = """
+    ALTER TABLE projects ADD COLUMN auto_scan INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE projects ADD COLUMN observation_revision INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE projects ADD COLUMN created_at REAL;
+    ALTER TABLE projects ADD COLUMN created_at_source TEXT NOT NULL DEFAULT 'unknown';
+    ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE services ADD COLUMN display_name TEXT;
+    ALTER TABLE services ADD COLUMN created_at REAL;
+    ALTER TABLE services ADD COLUMN created_at_source TEXT NOT NULL DEFAULT 'unknown';
+    ALTER TABLE services ADD COLUMN pending_spec TEXT;
+    ALTER TABLE services ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE service_observations(service_id TEXT PRIMARY KEY, checked_at REAL NOT NULL,
+      projection TEXT NOT NULL);
+    UPDATE services SET created_at=(SELECT MIN(started) FROM runs WHERE service_id=services.id);
+    UPDATE projects SET created_at=(SELECT MIN(created_at) FROM services WHERE project_id=projects.id);
+    UPDATE services SET created_at_source='estimated' WHERE created_at IS NOT NULL;
+    UPDATE projects SET created_at_source='estimated' WHERE created_at IS NOT NULL;
+    INSERT OR IGNORE INTO metadata(key,value) VALUES
+      ('project_sidebar_preferences','{"sort_key":"name","direction":"asc"}');
+"""
+
+
 def database():
-    return storage.database(ROOT)
+    db = storage.open_database(ROOT)
+    try:
+        version = db.execute('PRAGMA user_version').fetchone()[0]
+        if version != SCHEMA_VERSION:
+            with (ROOT / 'schema.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                version = db.execute('PRAGMA user_version').fetchone()[0]
+                if version == 0:
+                    db.execute('PRAGMA journal_mode=WAL')
+                    db.executescript('BEGIN IMMEDIATE;\n' + BASE_SCHEMA + SCHEMA_V1
+                                     + f'PRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;')
+                elif version != SCHEMA_VERSION:
+                    raise RuntimeError('状态数据库版本不受当前引擎支持')
+        storage.private_file(ROOT / 'manager.sqlite')
+        return db
+    except BaseException:
+        db.close()  # Rolls back an incomplete schema transaction.
+        raise
 
 
 def query(sql, values=(), one=False):
@@ -77,15 +132,32 @@ def service(service_id):
     return item
 
 
+class MutationBusy(RuntimeError):
+    pass
+
+
+_mutation = threading.local()
+
+
 @contextlib.contextmanager
-def mutation_lock():
+def mutation_lock(wait=0):
     ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (ROOT / 'mutation.lock').open('a') as lock:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise MutationBusy('另一个操作正在进行，请等待完成后重试') from None
+                time.sleep(.025)
+        previous = getattr(_mutation, 'root', None)
+        _mutation.root = ROOT
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError('另一个操作正在进行，请等待完成后重试')
-        yield
+            yield
+        finally:
+            _mutation.root = previous
 
 
 def identity(pid):
@@ -136,7 +208,8 @@ def project(cwd, name=None):
     if found:
         return found
     item_id = hashlib.sha256(path.encode()).hexdigest()[:24]
-    write('INSERT INTO projects(id,cwd,name) VALUES (?,?,?)', [item_id, path, name or Path(path).name])
+    write("INSERT INTO projects(id,cwd,name,created_at,created_at_source) VALUES (?,?,?,?,'registered') "
+          "ON CONFLICT(cwd) DO NOTHING", [item_id, path, name or Path(path).name, timestamp()])
     return query('SELECT * FROM projects WHERE id=?', [item_id], True)
 
 
@@ -146,7 +219,18 @@ def environment(explicit):
 
 
 def runtime_env(spec):
-    return {**os.environ, **spec.get('env', {})}
+    env = {**os.environ, **spec.get('env', {})}
+    for key in spec.get('env_unset', ()):
+        env.pop(key, None)
+    return env
+
+
+def private_error(spec, error):
+    message = str(error)
+    values = spec.get('env', {}).values()
+    if any(value and value in message for value in values):
+        return '服务操作失败，请查看本机日志'
+    return message
 
 
 def health(url):
@@ -178,9 +262,10 @@ def record_spec(item_id, proj, name, kind, spec, group=None):
         if json.loads(prior['spec']) != spec:
             raise ValueError('运行期间不能覆盖启动配置，请先停止')
         return service(item_id)
-    write('INSERT INTO services(id,project_id,name,kind,spec,group_id) VALUES (?,?,?,?,?,?) '
+    write("INSERT INTO services(id,project_id,name,kind,spec,group_id,created_at,created_at_source) "
+          "VALUES (?,?,?,?,?,?,?,'registered') "
           'ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,spec=excluded.spec,group_id=excluded.group_id',
-          [item_id, proj['id'], name, kind, json.dumps(spec), group])
+          [item_id, proj['id'], name, kind, json.dumps(spec), group, timestamp()])
     return service(item_id)
 
 
@@ -346,7 +431,7 @@ def supervise(run_id):
         set_run(run_id, state=state, ended=timestamp(), exit_code=code, error=None)
     except Exception as exc:
         set_run(run_id, state='failed' if child is None else 'unknown',
-                ended=timestamp() if child is None else None, error=str(exc))
+                ended=timestamp() if child is None else None, error=private_error(spec, exc))
 
 
 def container_inspect(cid):
@@ -483,8 +568,9 @@ def reconcile_docker(item, objects):
 
 
 def register_container(req):
+    selected = project_record(req['project_id']) if 'project_id' in req else None
     obj = container_inspect(req['container_id'])
-    proj = project(req.get('cwd', os.getcwd()))
+    proj = selected or project(req.get('cwd', os.getcwd()))
     item_id = req.get('id') or hashlib.sha256(obj['Id'].encode()).hexdigest()[:24]
     existing = query('SELECT id FROM services WHERE kind=?', ['container'])
     for row in existing:
@@ -522,8 +608,9 @@ def register_compose(req):
             if req.get('start', True) else []}
 
 
-def start_docker(item):
-    objects = containers_for(item)
+def start_docker(item, objects=None):
+    if objects is None:
+        objects = containers_for(item)
     if any(o['State']['Running'] for o in objects):
         reconcile_docker(item, objects)
         raise RuntimeError('服务已经运行，拒绝重复启动')
@@ -531,7 +618,8 @@ def start_docker(item):
         if item['kind'] == 'container':
             docker('start', item['spec']['container_id'])
         else:
-            compose_command(item, 'up', '-d', '--no-deps', item['spec']['member'])
+            preserve = ['--no-recreate'] if item['pending_spec'] else []
+            compose_command(item, 'up', '-d', '--no-deps', *preserve, item['spec']['member'])
     except Exception as exc:
         # Record the failed start attempt without falsely declaring a container stopped
         # when the daemon accepted it but the command response was lost.
@@ -539,13 +627,13 @@ def start_docker(item):
             after = containers_for(item)
         except Exception:
             run_id = new_run(item['id'])
-            set_run(run_id, state='unknown', error=str(exc))
+            set_run(run_id, state='unknown', error=private_error(item['spec'], exc))
         else:
             if any(o['State']['Running'] for o in after):
                 reconcile_docker(item, after)
             else:
                 run_id = new_run(item['id'], docker_runtime(after))
-                set_run(run_id, ended=timestamp(), state='failed', error=str(exc))
+                set_run(run_id, ended=timestamp(), state='failed', error=private_error(item['spec'], exc))
         raise
     reconcile_docker(item, containers_for(item))
     result = observe(item['id'])
@@ -570,6 +658,54 @@ def stop_docker(item, force=False):
     return observe(item['id'])
 
 
+def pending_settings(item):
+    return json.loads(item['pending_spec']) if item['pending_spec'] else {}
+
+
+def start_registered(item, run):
+    local = item['kind'] in ('process', 'task')
+    if local and run and run['ended'] is None:
+        raise RuntimeError('前一次运行尚未结束，拒绝启动第二个副本')
+    pending = pending_settings(item)
+    spec = {**item['spec'], **pending}
+    if spec.get('management') == 'observed':
+        spec['management'] = 'managed'
+    objects = None
+    if not local:
+        objects = containers_for(item)
+        if any(obj['State']['Running'] for obj in objects):
+            reconcile_docker(item, objects)
+            raise RuntimeError('服务已经运行，拒绝重复启动')
+        if 'url' in pending:
+            bindings = {health_binding(spec['url'], obj['NetworkSettings'].get('Ports') or {}) for obj in objects}
+            bindings.discard(None)
+            if len(bindings) == 1:
+                spec['url_binding_port'] = bindings.pop()
+    changed = spec != item['spec']
+    if changed:
+        write('UPDATE services SET spec=? WHERE id=?', [json.dumps(spec), item['id']])
+    try:
+        active = {**item, 'spec': spec}
+        result = start_process(active) if local else start_docker(active, objects)
+        if result['state'] == 'unknown':
+            raise RuntimeError(result.get('problem') or '无法确认新运行已启动')
+    except Exception as exc:
+        attempted = latest(item['id'])
+        # A timed-out start may have created a live or unknown run. Keep the
+        # active spec used for that run until identity and termination are known.
+        if changed and (not attempted or attempted == run or attempted['ended'] is not None):
+            write('UPDATE services SET spec=? WHERE id=?', [json.dumps(item['spec']), item['id']])
+        message = private_error(spec, exc)
+        if message != str(exc):
+            raise RuntimeError(message) from None
+        raise
+    if pending:
+        write('UPDATE services SET pending_spec=NULL,config_revision=config_revision+1 '
+              'WHERE id=? AND config_revision=?', [item['id'], item['config_revision']])
+        return cached_observation(item['id'])
+    return result
+
+
 def operate(service_id, action, trigger='user'):
     operation = uid()
     write('INSERT INTO operations(id,target,action,trigger,started) VALUES (?,?,?,?,?)',
@@ -577,6 +713,7 @@ def operate(service_id, action, trigger='user'):
     try:
         item = service(service_id)
         observed = item['spec'].get('management') == 'observed'
+        capability = None
         if observed:
             capability = observe(service_id)
             key = {'stop': 'can_stop', 'force': 'can_force', 'start': 'can_start', 'restart': 'can_restart'}.get(action)
@@ -584,19 +721,11 @@ def operate(service_id, action, trigger='user'):
                 raise RuntimeError(capability.get('capability_reason') or '观察服务当前不具备此操作能力')
         run = latest(service_id)
         if action == 'restart':
-            operate(service_id, 'stop', trigger)
-            item = service(service_id)
+            if capability is None or capability['state'] in ACTIVE:
+                operate(service_id, 'stop', trigger)
             result = operate(service_id, 'start', trigger)
         elif action == 'start':
-            if observed:
-                item['spec']['management'] = 'managed'
-                write('UPDATE services SET spec=? WHERE id=?', [json.dumps(item['spec']), service_id])
-            if item['kind'] in ('process', 'task'):
-                if run and run['ended'] is None:
-                    raise RuntimeError('前一次运行尚未结束，拒绝启动第二个副本')
-                result = start_process(item)
-            else:
-                result = start_docker(item)
+            result = start_registered(item, run)
         elif action in ('stop', 'force'):
             if observed and item['kind'] in ('process', 'task'):
                 import adoption
@@ -608,13 +737,16 @@ def operate(service_id, action, trigger='user'):
         write('UPDATE operations SET ended=?,result=? WHERE id=?', [timestamp(), 'succeeded', operation])
         return result
     except Exception as exc:
-        write('UPDATE operations SET ended=?,result=?,error=? WHERE id=?', [timestamp(), 'failed', str(exc), operation])
+        message = private_error(item['spec'], exc) if 'item' in locals() else str(exc)
+        write('UPDATE operations SET ended=?,result=?,error=? WHERE id=?', [timestamp(), 'failed', message, operation])
+        if message != str(exc):
+            raise RuntimeError(message) from None
         raise
 
 
-def observe(service_id):
-    item = service(service_id)
-    run = latest(service_id)
+def probe_observation(item, run):
+    objects = None
+    changes = None
     problem = None
     can_stop = False
     capability_reason = None
@@ -623,10 +755,11 @@ def observe(service_id):
     if item['kind'] in ('container', 'compose'):
         try:
             objects = containers_for(item)
-            run = reconcile_docker(item, objects)
-            state = 'running' if any(o['State']['Running'] for o in objects) else (run['state'] if run else 'stopped')
             can_stop = any(o['State']['Running'] for o in objects)
+            state = 'running' if can_stop else 'stopped'
+            run = {**(run or {}), 'runtime': docker_runtime(objects)}
         except Exception as exc:
+            objects = None
             state, problem = 'unknown', str(exc)
     elif observed and run and run['ended'] is None:
         runtime = run['runtime']
@@ -639,17 +772,17 @@ def observe(service_id):
             elif run['state'] == 'stop_failed':
                 if runtime.get('control_members') and all(port_free(p) for p in item['spec'].get('ports', [])):
                     state = 'cancelled' if item['kind'] == 'task' else 'stopped'
-                    set_run(run['id'], ended=timestamp(), state=state, error=None)
-                    run = latest(service_id)
+                    changes = {'ended': timestamp(), 'state': state, 'error': None}
+                    run = {**run, **changes}
                 else:
                     state, problem = 'stop_failed', run['error']
             elif launchers:
                 state, problem = 'unknown', '监听进程已退出，但已确认启动器或子进程仍在运行，拒绝启动副本'
             else:
                 state = 'exited'
-                set_run(run['id'], ended=timestamp(), state=state,
-                        runtime={**runtime, 'exit_observation': '观察对象已退出或 PID 出生身份已变化；退出码未采集'})
-                run = latest(service_id)
+                changes = {'ended': timestamp(), 'state': state,
+                           'runtime': {**runtime, 'exit_observation': '观察对象已退出或 PID 出生身份已变化；退出码未采集'}}
+                run = {**run, **changes}
         except Exception as exc:
             state, problem = 'unknown', str(exc)
     elif run and run['ended'] is None:
@@ -669,10 +802,6 @@ def observe(service_id):
     health_state = health(url) if state in ('running', 'stop_failed') else 'not_configured'
     if state in ('running', 'stop_failed') and not url and any(native):
         health_state = 'available' if all(h == 'healthy' for h in native) else 'unavailable' if 'unhealthy' in native else 'checking'
-    # Secrets remain usable for restart but never leave the engine in UI snapshots.
-    spec = {k: v for k, v in item['spec'].items() if k != 'env'}
-    spec['url'] = url
-    spec['env_keys'] = sorted(item['spec'].get('env', {}))
     can_start = state not in ACTIVE and not observed
     can_restart = state != 'unknown' and not observed
     management = 'managed'
@@ -705,13 +834,150 @@ def observe(service_id):
             management = 'attached'
     else:
         can_force = state == 'stop_failed' and can_stop
-    spec.pop('recipe_candidate', None)
-    return {**item, 'spec': spec, 'run': run, 'state': state, 'health': health_state,
+    projection = {'effective_url': url, 'state': state, 'health': health_state,
             'problem': problem or ((run or {}).get('error')), 'can_stop': can_stop, 'can_force': can_force,
             'can_start': can_start, 'can_restart': can_restart, 'capability_reason': capability_reason,
             'management': management, 'automatic_end': not observed,
             'can_logs': not observed or item['kind'] in ('container', 'compose')}
+    return projection, objects, changes
 
+
+def public_service(item, observation):
+    spec = {k: v for k, v in item['spec'].items() if k not in ('env', 'recipe_candidate')}
+    spec['env_keys'] = sorted(item['spec'].get('env', {}))
+    spec['url'] = observation.get('effective_url', spec.get('url'))
+    public = {k: v for k, v in item.items() if k != 'pending_spec'}
+    public.update(observation)
+    public['name'] = item['display_name'] or item['name']
+    pending = pending_settings(item)
+    desired = {**item['spec'], **pending}
+    public['has_pending_configuration'] = bool(pending)
+    public['configuration'] = {key: desired[key] for key in ('argv', 'cwd', 'url') if key in desired}
+    public['configuration']['env_keys'] = sorted(desired.get('env', {}))
+    if item['spec'].get('management') == 'observed' and pending.get('argv'):
+        if public['state'] not in ACTIVE:
+            public.update(can_start=True, can_restart=True, capability_reason=None, management='attached')
+        elif public['state'] in ('running', 'stop_failed') and public.get('can_stop'):
+            public.update(can_restart=True, capability_reason=None, management='attached')
+    public.pop('effective_url', None)
+    return {**public, 'spec': spec}
+
+
+def observation_token(project):
+    if project is None:
+        return None
+    return project['id'], project['created_at'], project['observation_revision']
+
+
+def observation_row(project_id):
+    return query('SELECT id,created_at,observation_revision,auto_scan FROM projects WHERE id=?',
+                 [project_id], True)
+
+
+def cached_observation(service_id):
+    item = service(service_id)
+    project = observation_row(item['project_id'])
+    cached = query('SELECT * FROM service_observations WHERE service_id=?', [service_id], True)
+    projection = json.loads(cached['projection']) if cached else {
+        'state': 'unknown', 'health': 'not_configured', 'run': None,
+        'can_start': False, 'can_stop': False, 'can_restart': False, 'can_force': False,
+        'can_logs': item['spec'].get('management') != 'observed' or item['kind'] in ('container', 'compose'),
+    }
+    return public_service(item, {**projection, 'observation_paused': bool(project and not project['auto_scan']),
+                                 'last_checked_at': cached['checked_at'] if cached else None, 'state_fresh': False})
+
+
+def prepare_observation(service_id, automatic=False, expected=None):
+    item = service(service_id)
+    project = observation_row(item['project_id'])
+    token = observation_token(project)
+    if automatic and (not project or not project['auto_scan'] or (expected is not None and expected != token)):
+        return None
+    run = latest(service_id)
+    started = timestamp()
+    result = probe_observation(item, run)
+    return item, run, token, started, timestamp(), result
+
+
+def persist_observation(db, service_id, checked_at, projection):
+    db.execute('INSERT INTO service_observations(service_id,checked_at,projection) VALUES (?,?,?) '
+               'ON CONFLICT(service_id) DO UPDATE SET checked_at=excluded.checked_at,projection=excluded.projection '
+               'WHERE excluded.checked_at>=service_observations.checked_at',
+               [service_id, checked_at, json.dumps(projection)])
+
+
+def check_observation(db, item, run, token, started, automatic):
+    row = db.execute('SELECT * FROM services WHERE id=?', [item['id']]).fetchone()
+    if row is None:
+        raise ValueError('服务不存在：' + item['id'])
+    current = dict(row)
+    current['spec'] = json.loads(current['spec'])
+    row = db.execute('SELECT * FROM projects WHERE id=?', [item['project_id']]).fetchone()
+    project = dict(row) if row else None
+    if automatic and (not project or not project['auto_scan'] or observation_token(project) != token):
+        return None
+    row = db.execute('SELECT * FROM runs WHERE service_id=? ORDER BY started DESC LIMIT 1', [item['id']]).fetchone()
+    current_run = dict(row) if row else None
+    if current_run:
+        current_run['runtime'] = json.loads(current_run['runtime'])
+    row = db.execute('SELECT checked_at FROM service_observations WHERE service_id=?', [item['id']]).fetchone()
+    if current != item or current_run != run or (automatic and row and row['checked_at'] > started):
+        if automatic:
+            return None
+        raise MutationBusy('服务在检查期间发生变化，请重试')
+    return project
+
+
+def finish_observation(service_id, prepared, automatic=False):
+    if prepared is None:
+        return cached_observation(service_id)
+    item, run, token, started, checked_at, result = prepared
+    projection, objects, changes = result
+    try:
+        if objects is None and not changes:
+            # A cache-only update shares SQLite's write transaction with the
+            # policy switch and deletions, without taking the operation lock.
+            with database() as db:
+                db.execute('BEGIN IMMEDIATE')
+                project = check_observation(db, item, run, token, started, automatic)
+                if project is not None:
+                    projection['run'] = run
+                    persist_observation(db, service_id, checked_at, projection)
+        else:
+            lock = contextlib.nullcontext() if getattr(_mutation, 'root', None) == ROOT else mutation_lock()
+            with lock:
+                with database() as db:
+                    project = check_observation(db, item, run, token, started, automatic)
+                if project is not None:
+                    if objects is not None:
+                        run = reconcile_docker(item, objects)
+                        projection['state'] = 'running' if projection['can_stop'] else (run['state'] if run else 'stopped')
+                    else:
+                        set_run(run['id'], **changes)
+                        run = latest(service_id)
+                    projection['run'] = run
+                    projection['problem'] = projection['problem'] or (run or {}).get('error')
+                    with database() as db:
+                        persist_observation(db, service_id, checked_at, projection)
+        if project is None:
+            return cached_observation(service_id)
+        return public_service(item, {**projection, 'observation_paused': not bool(project['auto_scan']),
+                                     'last_checked_at': checked_at, 'state_fresh': True})
+    except MutationBusy:
+        if not automatic:
+            raise
+        return cached_observation(service_id)
+
+
+def observe(service_id, *, automatic=False, expected=None):
+    # Supervisor updates are independent of the mutation lock. Retry one read if
+    # a service finishes naturally while an explicit inspection is in flight.
+    for attempt in range(2):
+        try:
+            return finish_observation(service_id, prepare_observation(service_id, automatic, expected), automatic)
+        except MutationBusy:
+            if attempt:
+                raise
 
 def project_record(project_id):
     item = query('SELECT * FROM projects WHERE id=?', [project_id], True)
@@ -720,32 +986,233 @@ def project_record(project_id):
     return item
 
 
-def rename_project(project_id, name):
-    project_record(project_id)
+def validated_name(name, label):
     if not isinstance(name, str):
-        raise ValueError('项目名称必须是文字')
+        raise ValueError(label + '名称必须是文字')
     name = name.strip()
     if not name or len(name) > 100:
-        raise ValueError('项目名称须为 1–100 个字符')
+        raise ValueError(label + '名称须为 1–100 个字符')
     if any(unicodedata.category(c) in ('Cc', 'Cf', 'Zl', 'Zp') for c in name):
-        raise ValueError('项目名称不能包含控制字符、不可见格式或换行')
+        raise ValueError(label + '名称不能包含控制字符、不可见格式或换行')
+    return name
+
+
+def rename_project(project_id, name):
+    project_record(project_id)
+    name = validated_name(name, '项目')
     write('UPDATE projects SET name=? WHERE id=?', [name, project_id])
     return project_record(project_id)
+
+
+def rename_service(service_id, name):
+    service(service_id)
+    name = validated_name(name, '服务')
+    write('UPDATE services SET display_name=?,config_revision=config_revision+1 WHERE id=?', [name, service_id])
+    return cached_observation(service_id)
+
+
+ENV_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+
+def validated_health_url(value):
+    if value is None or value == '':
+        return None
+    if isinstance(value, str) and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+        try:
+            endpoint = urllib.parse.urlsplit(value)
+            port = endpoint.port
+            if endpoint.scheme in ('http', 'https') and endpoint.hostname and (port is None or port > 0):
+                return value
+        except ValueError:
+            pass
+    raise ValueError('健康检查地址必须是有效的 HTTP 或 HTTPS URL')
+
+
+def configure_service(req):
+    item = service(req['id'])
+    revision = item['config_revision']
+    if 'config_revision' in req and (type(req['config_revision']) is not int or req['config_revision'] != revision):
+        raise RuntimeError('配置已被修改，请重新打开表单后重试')
+    local = item['kind'] in ('process', 'task')
+    local_fields = {'argv', 'command', 'cwd', 'env', 'unset_env'}
+    allowed = {'action', 'id', 'config_revision', 'name', 'url'}
+    if set(req) - (allowed | (local_fields if local else set())):
+        raise ValueError('服务类型不支持该配置字段')
+    if 'command' in req and 'argv' in req:
+        raise ValueError('请只提供一种启动命令格式')
+    name = validated_name(req['name'], '服务') if 'name' in req else item['display_name']
+    pending = pending_settings(item)
+    active = item['spec']
+    if 'url' in req:
+        pending['url'] = validated_health_url(req['url'])
+        if not local:
+            ports = ((latest(item['id']) or {}).get('runtime') or {}).get('ports', [])
+            matches = {health_binding(pending['url'], mapping) for mapping in ports}
+            matches.discard(None)
+            pending['url_binding_port'] = matches.pop() if len(matches) == 1 else None
+    if 'argv' in req or 'command' in req:
+        argv = req.get('argv')
+        if 'command' in req:
+            if not isinstance(req['command'], str):
+                raise ValueError('启动命令必须是文字')
+            try:
+                argv = shlex.split(req['command'])
+            except ValueError:
+                raise ValueError('启动命令的引号不完整') from None
+        if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and '\0' not in arg for arg in argv) or not argv[0].strip():
+            raise ValueError('请填写单项服务的有效启动命令')
+        pending['argv'] = argv
+        if active.get('management') == 'observed':
+            pending.update(recipe_explicit=True, recipe_automatic=False)
+    if 'cwd' in req or 'argv' in req or 'command' in req:
+        raw_cwd = req.get('cwd', pending.get('cwd', active.get('cwd')))
+        try:
+            folder = Path(raw_cwd).expanduser().resolve(strict=True)
+            if not folder.is_dir():
+                raise ValueError
+        except (ValueError, TypeError, OSError, RuntimeError):
+            raise ValueError('工作目录不存在或不是文件夹') from None
+        pending['cwd'] = str(folder)
+    if 'env' in req or 'unset_env' in req:
+        additions = req.get('env', {})
+        removals = req.get('unset_env', [])
+        if (not isinstance(additions, dict) or not isinstance(removals, list) or
+                any(not isinstance(key, str) or not ENV_KEY.fullmatch(key)
+                    for key in [*additions, *removals]) or
+                any(not isinstance(value, str) or '\0' in value for value in additions.values())):
+            raise ValueError('环境变量需要有效的键和值')
+        if set(additions) & set(removals):
+            raise ValueError('同一个环境变量不能同时更新和删除')
+        values = dict(pending.get('env', active.get('env', {})))
+        unset = set(pending.get('env_unset', active.get('env_unset', ())))
+        values.update(additions)
+        for key in removals:
+            values.pop(key, None)
+        pending['env'] = values
+        pending['env_unset'] = sorted((unset | set(removals)) - set(additions))
+    write('UPDATE services SET display_name=?,pending_spec=?,config_revision=config_revision+1 WHERE id=?',
+          [name, json.dumps(pending) if pending else None, item['id']])
+    return cached_observation(item['id'])
+
+
+SORT_KEYS = ('name', 'created_at', 'running_count')
+SORT_DIRECTIONS = ('asc', 'desc')
+
+
+def project_sort_preferences():
+    row = query('SELECT value FROM metadata WHERE key=?', ['project_sidebar_preferences'], True)
+    if row:
+        try:
+            value = json.loads(row['value'])
+            if (isinstance(value, dict) and value.get('sort_key') in SORT_KEYS and
+                    value.get('direction') in SORT_DIRECTIONS):
+                return value
+        except ValueError:
+            pass
+    return {'sort_key': 'name', 'direction': 'asc'}
+
+
+def sort_projects(projects, preferences):
+    sort_key = preferences['sort_key']
+    reverse = preferences['direction'] == 'desc'
+    def value(project):
+        if sort_key == 'name':
+            return unicodedata.normalize('NFKC', project['name']).casefold()
+        return project[sort_key]
+
+    ordered = []
+    stable = sorted(projects, key=lambda project: project['id'])
+    for pinned in (True, False):
+        group = [project for project in stable if bool(project['pinned']) == pinned]
+        known = [project for project in group if value(project) is not None]
+        ordered.extend(sorted(known, key=value, reverse=reverse))
+        ordered.extend(project for project in group if value(project) is None)
+    return ordered
+
+
+def project_sidebar(observations=None):
+    import capture
+    disabled = set(capture.disabled_projects())
+    projects = query('SELECT * FROM projects')
+    registrations = query('SELECT id,project_id,spec FROM services')
+    occupied = {item['project_id'] for item in registrations}
+    visible = [item for item in registrations if json.loads(item['spec']).get('source') != 'internal']
+    occupied_visible = {item['project_id'] for item in visible}
+    projects = [p for p in projects if p['id'] not in occupied or p['id'] in occupied_visible]
+    if observations is None:
+        observations = []
+        for item in visible:
+            try:
+                observations.append(cached_observation(item['id']))
+            except ValueError:
+                if query('SELECT id FROM services WHERE id=?', [item['id']], True):
+                    raise
+    by_id = {project['id']: project for project in projects}
+    for project in projects:
+        project.update(running_count=0, last_checked_at=None, capture_enabled=project['cwd'] not in disabled)
+    for observation in observations:
+        project = by_id.get(observation['project_id'])
+        if not project:
+            continue
+        if observation['state'] == 'running':
+            project['running_count'] += 1
+        checked_at = observation['last_checked_at']
+        if checked_at is not None and (project['last_checked_at'] is None or checked_at > project['last_checked_at']):
+            project['last_checked_at'] = checked_at
+    preferences = project_sort_preferences()
+    return {'projects': sort_projects(projects, preferences), 'project_sort_preferences': preferences}
+
+
+def deletion_blocker(item):
+    labels = {'starting': '启动中', 'running': '运行中', 'stopping': '停止中',
+              'stop_failed': '停止失败', 'unknown': '身份或状态未知'}
+    unfinished = query('SELECT id FROM runs WHERE service_id=? AND ended IS NULL LIMIT 1', [item['id']], True)
+    if item['state'] in ACTIVE or item['can_stop'] or unfinished:
+        state = item['state'] if item['state'] in ACTIVE else 'unknown'
+        return {'id': item['id'], 'name': item['name'], 'state': state,
+                'reason': item.get('problem') or labels.get(state, '存在未结束的运行记录，需先核对')}
+    return None
+
+
+def service_delete_preview(service_id):
+    item = observe(service_id)
+    blocker = deletion_blocker(item)
+    return {'id': service_id, 'name': item['name'], 'can_delete': blocker is None,
+            'blockers': [blocker] if blocker else [],
+            'run_count': query('SELECT COUNT(*) AS count FROM runs WHERE service_id=?', [service_id], True)['count'],
+            'operation_count': query('SELECT COUNT(*) AS count FROM operations WHERE target=?', [service_id], True)['count']}
+
+
+def delete_service(service_id):
+    preview = service_delete_preview(service_id)
+    if not preview['can_delete']:
+        raise RuntimeError('不能删除服务：' + preview['blockers'][0]['reason'] + '。请先停止服务或核对其状态。')
+    trash_id = uid()
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        archive = {'deleted_at': timestamp(),
+                   'service': dict(db.execute('SELECT * FROM services WHERE id=?', [service_id]).fetchone()),
+                   'runs': [dict(row) for row in db.execute('SELECT * FROM runs WHERE service_id=?', [service_id])],
+                   'operations': [dict(row) for row in db.execute('SELECT * FROM operations WHERE target=?', [service_id])]}
+        if any(run['ended'] is None for run in archive['runs']):
+            raise RuntimeError('不能删除服务：仍有未结束的运行')
+        db.execute('INSERT INTO metadata(key,value) VALUES (?,?)', ['deleted_service:' + trash_id, json.dumps(archive)])
+        db.execute('DELETE FROM service_observations WHERE service_id=?', [service_id])
+        db.execute('DELETE FROM operations WHERE target=?', [service_id])
+        db.execute('DELETE FROM runs WHERE service_id=?', [service_id])
+        db.execute('DELETE FROM services WHERE id=?', [service_id])
+    return {'id': service_id, 'trash_id': trash_id,
+            'removed_runs': preview['run_count'], 'removed_operations': preview['operation_count']}
 
 
 def project_delete_preview(project_id):
     proj = project_record(project_id)
     ids = query('SELECT id FROM services WHERE project_id=? ORDER BY name', [project_id])
     blockers = []
-    labels = {'starting': '启动中', 'running': '运行中', 'stopping': '停止中',
-              'stop_failed': '停止失败', 'unknown': '身份或状态未知'}
     for row in ids:
-        item = observe(row['id'])
-        unfinished = query('SELECT id FROM runs WHERE service_id=? AND ended IS NULL LIMIT 1', [item['id']], True)
-        if item['state'] in ACTIVE or item['can_stop'] or unfinished:
-            state = item['state'] if item['state'] in ACTIVE else 'unknown'
-            blockers.append({'id': item['id'], 'name': item['name'], 'state': state,
-                'reason': item.get('problem') or labels.get(state, '存在未结束的运行记录，需先核对')})
+        blocker = deletion_blocker(observe(row['id']))
+        if blocker:
+            blockers.append(blocker)
     return {'project': proj, 'service_count': len(ids),
         'run_count': query('SELECT COUNT(*) AS count FROM runs WHERE service_id IN (SELECT id FROM services WHERE project_id=?)', [project_id], True)['count'],
         'operation_count': query('SELECT COUNT(*) AS count FROM operations WHERE target=? OR target IN (SELECT id FROM services WHERE project_id=?)', [project_id, project_id], True)['count'],
@@ -766,6 +1233,8 @@ def delete_project(project_id):
         db.execute('INSERT INTO metadata VALUES (?,?)', ['deleted_project:' + trash_id, json.dumps(archive)])
         db.execute('DELETE FROM operations WHERE target=? OR target IN (SELECT id FROM services WHERE project_id=?)', [project_id, project_id])
         db.execute('DELETE FROM runs WHERE service_id IN (SELECT id FROM services WHERE project_id=?)', [project_id])
+        db.execute('DELETE FROM service_observations WHERE service_id IN '
+                   '(SELECT id FROM services WHERE project_id=?)', [project_id])
         db.execute('DELETE FROM services WHERE project_id=?', [project_id])
         db.execute('DELETE FROM projects WHERE id=?', [project_id])
     return {'id': project_id, 'trash_id': trash_id, 'removed_services': preview['service_count'],
@@ -790,8 +1259,26 @@ def restore_project(trash_id):
     proj = archive['project']
     if query('SELECT id FROM projects WHERE id=? OR cwd=?', [proj['id'], proj['cwd']], True):
         raise RuntimeError('同一目录已有项目登记，无法恢复；不会覆盖现有项目')
-    columns = {'projects': ('id', 'cwd', 'name', 'manual', 'codex_exit'),
-        'services': ('id', 'project_id', 'name', 'kind', 'spec', 'keep', 'group_id'),
+    oldest = {}
+    for run in archive['runs']:
+        sid, started = run['service_id'], run['started']
+        oldest[sid] = min(oldest.get(sid, started), started)
+    archived_services = {item['id'] for item in archive['services']}
+    for item in archive['services']:
+        item.setdefault('display_name', None)
+        item.setdefault('pending_spec', None)
+        item.setdefault('config_revision', 0)
+        item.setdefault('created_at', oldest.get(item['id']))
+        item.setdefault('created_at_source', 'estimated' if item['created_at'] is not None else 'unknown')
+    proj.setdefault('created_at', min((oldest[sid] for sid in archived_services & oldest.keys()), default=None))
+    proj.setdefault('created_at_source', 'estimated' if proj['created_at'] is not None else 'unknown')
+    proj.setdefault('auto_scan', 1)
+    proj.setdefault('observation_revision', 0)
+    proj.setdefault('pinned', 0)
+    columns = {'projects': ('id', 'cwd', 'name', 'manual', 'codex_exit', 'auto_scan',
+                            'observation_revision', 'created_at', 'created_at_source', 'pinned'),
+        'services': ('id', 'project_id', 'name', 'kind', 'spec', 'keep', 'group_id',
+                     'display_name', 'created_at', 'created_at_source', 'pending_spec', 'config_revision'),
         'runs': ('id', 'service_id', 'started', 'ended', 'state', 'exit_code', 'runtime', 'error', 'log'),
         'operations': ('id', 'target', 'action', 'trigger', 'started', 'ended', 'result', 'error')}
     try:
@@ -807,20 +1294,35 @@ def restore_project(trash_id):
     return {'project': project_record(proj['id']), 'restored_services': len(archive['services']), 'restored_runs': len(archive['runs'])}
 
 
-def snapshot():
-    import capture as capture_module
-    disabled = capture_module.disabled_projects()
-    ids = [row['id'] for row in query('SELECT id,spec FROM services ORDER BY name')
-           if json.loads(row['spec']).get('source') != 'internal']
-    def observe_existing(sid):
+def snapshot(refresh_project=None):
+    if refresh_project not in (None, 'all'):
+        project_record(refresh_project)
+    rows = [row for row in query('SELECT id,project_id,spec FROM services ORDER BY name')
+            if json.loads(row['spec']).get('source') != 'internal']
+    automatic = refresh_project is None
+
+    def prepare(row):
+        if not automatic and refresh_project not in ('all', row['project_id']):
+            return None
         try:
-            return observe(sid)
+            return prepare_observation(row['id'], automatic)
         except ValueError:
-            if not query('SELECT id FROM services WHERE id=?', [sid], True):
-                return None  # A concurrent project deletion completed after the ID read.
+            if not query('SELECT id FROM services WHERE id=?', [row['id']], True):
+                return None
             raise
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        services = [item for item in pool.map(observe_existing, ids) if item is not None]
+        pending = list(pool.map(prepare, rows))
+    services = []
+    for row, prepared in zip(rows, pending):
+        sid = row['id']
+        try:
+            services.append(finish_observation(sid, prepared, automatic))
+        except MutationBusy:
+            services.append(observe(sid, automatic=automatic))
+        except ValueError:
+            if query('SELECT id FROM services WHERE id=?', [sid], True):
+                raise
     watcher = query('SELECT value FROM metadata WHERE key=?', ['watcher'], True)
     watcher = json.loads(watcher['value']) if watcher else None
     if watcher:
@@ -829,13 +1331,9 @@ def snapshot():
     capture = json.loads(capture['value']) if capture else None
     if capture:
         capture['alive'] = matches(capture.get('pid'), capture.get('birth'), 'capture.py') and timestamp() - capture.get('updated', 0) < 20
-    projects = [p for p in query('SELECT * FROM projects ORDER BY name')
-                if not query('SELECT id FROM services WHERE project_id=?', [p['id']]) or
-                any(json.loads(s['spec']).get('source') != 'internal' for s in query('SELECT spec FROM services WHERE project_id=?', [p['id']]))]
-    for proj in projects:
-        proj['capture_enabled'] = proj['cwd'] not in disabled
     diagnostic = query('SELECT value FROM metadata WHERE key=?', ['capture_diagnostic'], True)
-    return {'projects': projects, 'services': services,
+    services.sort(key=lambda item: (item['state'] != 'running', -(item['created_at'] or 0), item['id']))
+    return {**project_sidebar(services), 'services': services,
             'operations': query('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
             'watcher': watcher, 'capture': capture,
             'capture_diagnostic': json.loads(diagnostic['value']) if diagnostic else None,
@@ -914,10 +1412,31 @@ def discover():
     return {'containers': containers, 'processes': process_items, 'errors': errors}
 
 
+def update_project_scan_policy(enabled, project_ids=None):
+    if type(enabled) is not bool:
+        raise ValueError('自动扫描开关必须为布尔值')
+    update = ('UPDATE projects SET auto_scan=?,observation_revision=observation_revision+1 '
+              'WHERE auto_scan!=?')
+    with contextlib.closing(database()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        if project_ids is None:
+            return db.execute(update, [enabled, enabled]).rowcount
+        registered = {row['id'] for row in db.execute('SELECT id FROM projects')}
+        if not project_ids <= registered:
+            raise ValueError('所选项目已变更，请重新选择')
+        return db.executemany(update + ' AND id=?', [(enabled, enabled, project_id)
+                                                     for project_id in project_ids]).rowcount
+
+
 def dispatch(req):
     action = req['action']
     if action == 'snapshot':
         return snapshot()
+    if action == 'refresh':
+        project_id = req.get('project_id', 'all')
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError('手动刷新需要有效的项目标识')
+        return snapshot(project_id)
     if action == 'history':
         rows = query('SELECT * FROM runs WHERE service_id=? ORDER BY started DESC', [req['id']])
         for row in rows:
@@ -945,12 +1464,51 @@ def dispatch(req):
         import capture
         capture.ensure_collector()
         return True
+    if action == 'service_delete_preview':
+        return service_delete_preview(req['id'])
     if action == 'project_delete_preview':
         return project_delete_preview(req['id'])
-    with mutation_lock():
+    with mutation_lock(wait=1 if action in ('project_scan_policy', 'project_scan_policy_batch') else 0):
         if action == 'capture_policy':
             import capture
             return capture.set_policy(req['cwd'], req['enabled'])
+        if action == 'project_scan_policy':
+            enabled = req.get('enabled')
+            if type(enabled) is not bool:
+                raise ValueError('自动扫描开关必须为布尔值')
+            project_record(req['id'])
+            update_project_scan_policy(enabled, {req['id']})
+            return project_record(req['id'])
+        if action == 'project_scan_policy_batch':
+            scope = req.get('scope')
+            ids = req.get('ids')
+            if scope == 'all' and 'ids' not in req:
+                project_ids = None
+            elif scope == 'selected' and isinstance(ids, list) and ids and all(isinstance(i, str) and i for i in ids):
+                project_ids = set(ids)
+            else:
+                raise ValueError('请选择要调整扫描策略的项目')
+            return {'changed': update_project_scan_policy(req.get('enabled'), project_ids)}
+        if action == 'project_pin':
+            pinned = req.get('pinned')
+            if type(pinned) is not bool:
+                raise ValueError('项目置顶必须为布尔值')
+            project_record(req['id'])
+            write('UPDATE projects SET pinned=? WHERE id=?', [pinned, req['id']])
+            return project_sidebar()
+        if action == 'project_sort_preferences':
+            sort_key, direction = req.get('sort_key'), req.get('direction')
+            if sort_key not in SORT_KEYS or direction not in SORT_DIRECTIONS:
+                raise ValueError('项目排序规则或方向无效')
+            write('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)',
+                  ['project_sidebar_preferences', json.dumps({'sort_key': sort_key, 'direction': direction})])
+            return project_sidebar()
+        if action == 'service_delete':
+            return delete_service(req['id'])
+        if action == 'service_configure':
+            return configure_service(req)
+        if action == 'service_rename':
+            return rename_service(req['id'], req.get('name'))
         if action == 'project_rename':
             return rename_project(req['id'], req.get('name'))
         if action == 'project_delete':

@@ -1,0 +1,3 @@
+interface:
+  display_name: "OpenSpec：修订变更"
+  short_description: "修订已有规划产物并协调内容一致性，确认后写入，保持实现代码不变。"

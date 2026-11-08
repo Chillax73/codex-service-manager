@@ -1,0 +1,3 @@
+interface:
+  display_name: "OpenSpec：归档变更"
+  short_description: "检查产物、任务与规格同步状态，按用户选择验证同步结果并归档变更。"

@@ -5,13 +5,18 @@ import Darwin
 
 struct ProjectItem: Identifiable, Equatable {
     let id: String, name: String, cwd: String
-    let manual: Bool, codexExit: Bool, captureEnabled: Bool
+    let manual: Bool, codexExit: Bool
+    let autoScan, pinned, captureEnabled: Bool
+    let lastCheckedAt: Double?
     init(_ data: [String: Any]) {
         id = data["id"] as? String ?? ""; name = data["name"] as? String ?? ""
         cwd = data["cwd"] as? String ?? ""
-        captureEnabled = data["capture_enabled"] as? Bool ?? true
         manual = (data["manual"] as? NSNumber)?.boolValue ?? true
         codexExit = (data["codex_exit"] as? NSNumber)?.boolValue ?? false
+        autoScan = (data["auto_scan"] as? NSNumber)?.boolValue ?? true
+        pinned = (data["pinned"] as? NSNumber)?.boolValue ?? false
+        captureEnabled = (data["capture_enabled"] as? NSNumber)?.boolValue ?? true
+        lastCheckedAt = data["last_checked_at"] as? Double
     }
 }
 struct DeletedProjectItem: Identifiable {
@@ -38,12 +43,19 @@ struct ServiceItem: Identifiable {
     var canForce: Bool { raw["can_force"] as? Bool ?? false }
     var observed: Bool { spec["management"] as? String == "observed" }
     var capabilityReason: String? { raw["capability_reason"] as? String }
+    var observationPaused: Bool { raw["observation_paused"] as? Bool ?? false }
+    var lastCheckedAt: Double? { raw["last_checked_at"] as? Double }
+    var hasPendingConfiguration: Bool { raw["has_pending_configuration"] as? Bool ?? false }
+    var configuration: [String: Any] { raw["configuration"] as? [String: Any] ?? spec }
+    var configurationRevision: Int { raw["config_revision"] as? Int ?? 0 }
+    var isLocal: Bool { kind == "process" || kind == "task" }
     var managementSummary: String {
         if !observed { return "已接管 · 支持启停和重启" }
         if canRestart || canStart { return "已关联 · 支持启停和重启" }
         return canStop ? "已关联 · 可停止，待补充启动配置" : "自动观察 · 暂不可控制"
     }
-    var running: Bool { ["running", "stop_failed", "stopping"].contains(state) }
+    var running: Bool { state == "running" }
+    var listStatus: ServiceListStatus { ServiceListStatus(state: state) }
     var keep: Bool { (raw["keep"] as? NSNumber)?.boolValue ?? false }
     var spec: [String: Any] { raw["spec"] as? [String: Any] ?? [:] }
     var run: [String: Any] { raw["run"] as? [String: Any] ?? [:] }

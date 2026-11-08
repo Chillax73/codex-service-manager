@@ -18,11 +18,11 @@ struct StatusAppearance {
         case "succeeded", "available": color = .systemGreen; symbol = "checkmark.circle.fill"
         case "stopped", "exited": color = .systemRed; symbol = "stop.circle.fill"
         case "failed", "stop_failed", "unavailable": color = .systemRed; symbol = "exclamationmark.circle.fill"
-        case "starting", "stopping", "checking": color = .systemOrange; symbol = "clock.fill"
+        case "starting", "stopping", "checking", "processing": color = .systemOrange; symbol = "clock.fill"
         case "unknown": color = .systemOrange; symbol = "questionmark.circle.fill"
         case "attention": color = .systemOrange; symbol = "exclamationmark.triangle.fill"
         case "cancelled": color = .secondaryLabelColor; symbol = "xmark.circle.fill"
-        case "never_started", "not_configured": color = .secondaryLabelColor; symbol = "minus.circle.fill"
+        case "never_started", "not_configured", "inactive": color = .secondaryLabelColor; symbol = "minus.circle.fill"
         default: color = .systemOrange; symbol = "questionmark.circle.fill"
         }
     }
@@ -62,11 +62,36 @@ struct StatusBadge: View {
         .accessibilityLabel(prefix + (title ?? stateLabel(state)))
     }
 }
-let serviceStates = ["running", "exited", "stopped", "failed", "stop_failed", "succeeded", "unknown",
-                     "starting", "stopping", "cancelled", "never_started"]
-func needsAttention(_ item: ServiceItem) -> Bool {
-    item.problem != nil || item.health == "unavailable" || ["unknown", "failed", "stop_failed"].contains(item.state)
+enum ServiceListStatus: String, CaseIterable {
+    case running, inactive, processing, attention
+
+    init(state: String) {
+        switch state {
+        case "running": self = .running
+        case "stopped", "exited", "never_started", "succeeded", "cancelled": self = .inactive
+        case "starting", "stopping": self = .processing
+        default: self = .attention
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .running: return "运行中"
+        case .inactive: return "未运行"
+        case .processing: return "处理中"
+        case .attention: return "需关注"
+        }
+    }
+
+    func matches(_ item: ServiceItem) -> Bool {
+        item.listStatus == self || (self == .attention && needsAttention(item))
+    }
 }
+
+func needsAttention(_ item: ServiceItem) -> Bool {
+    item.listStatus == .attention || item.problem != nil || item.health == "unavailable"
+}
+
 struct ProjectStatus: Equatable {
     let total: Int, running: Int, attention: Int
     let state: String, label: String
@@ -87,4 +112,13 @@ struct ProjectStatus: Equatable {
 func dateLabel(_ number: Any?) -> String {
     guard let number = number as? Double else { return "—" }
     return Date(timeIntervalSince1970: number).formatted(date: .abbreviated, time: .standard)
+}
+
+func checkedLabel(_ checkedAt: Double?) -> String {
+    checkedAt.map { "上次检查 " + dateLabel($0) } ?? "尚无检查记录"
+}
+
+func creationLabel(_ service: [String: Any]) -> String {
+    guard let time = service["created_at"] as? Double else { return "未知" }
+    return dateLabel(time) + (service["created_at_source"] as? String == "estimated" ? "（估算）" : "")
 }

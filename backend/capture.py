@@ -46,6 +46,42 @@ def open_channel():
     return os.open(fifo, os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW)
 
 
+def event_project(event, projects=None):
+    cwd = event.get('cwd')
+    if not cwd:
+        return None
+    canonical = str(Path(cwd).expanduser().resolve())
+    if projects is not None:
+        return projects.get(canonical)
+    return engine.query('SELECT * FROM projects WHERE cwd=?', [canonical], True)
+
+
+def scan_allowed(current, previous):
+    if current and not current['auto_scan']:
+        return False
+    if previous is None:
+        # A new project may have been registered by a different event in this cycle.
+        return current is None or current['observation_revision'] == 0
+    return engine.observation_token(current) == engine.observation_token(previous)
+
+
+def extend_tracking(table, tracked):
+    changed = True
+    while changed:
+        changed = False
+        for pid, item in table.items():
+            if pid not in tracked and item['ppid'] in tracked:
+                parent = tracked[item['ppid']]
+                tracked[pid] = {'birth': item['birth'], 'event': parent['event'], 'root': False}
+                changed = True
+
+
+def save_tracking(tracked):
+    saved = {str(pid): value for pid, value in tracked.items()}
+    engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture_tracking', json.dumps(saved)])
+    return saved
+
+
 def receive_arms(fd, tracked):
     try:
         data = os.read(fd, 65536)
@@ -61,7 +97,12 @@ def receive_arms(fd, tracked):
             path = event_dir() / (event_id + '.json')
             if not path.exists():
                 continue
+            storage.private_file(path)
             event = json.loads(path.read_text())
+            previous = event_project(event)
+            if previous and not previous['auto_scan']:
+                (channel_dir() / (event_id + '.ack')).touch(mode=0o600)
+                continue
             table = process_table() if table is None else table
             if pid not in table:
                 continue
@@ -80,22 +121,26 @@ def receive_arms(fd, tracked):
                     hint['files'] = [str((cwd / f).resolve()) for f in
                                      ('compose.yaml', 'compose.yml', 'docker-compose.yml', 'docker-compose.yaml')
                                      if (cwd / f).exists()][:1]
-            save_event(event)
-            # Before acknowledging the shell's final checkpoint, seed all still
-            # attached children. The shell may exit/reparent them immediately.
-            tracked[pid] = {'birth': table[pid]['birth'], 'event': event_id, 'root': True}
-            changed = True
-            while changed:
-                changed = False
-                for child_pid, item in table.items():
-                    if child_pid not in tracked and item['ppid'] in tracked:
-                        parent = tracked[item['ppid']]
-                        tracked[child_pid] = {'birth': item['birth'], 'event': parent['event'], 'root': False}
-                        changed = True
-            engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)',
-                         ['capture_tracking', json.dumps({str(k): v for k, v in tracked.items()})])
+            canonical = str(Path(event['cwd']).expanduser().resolve())
+            with engine.database() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT * FROM projects WHERE cwd=?', [canonical]).fetchone()
+                if scan_allowed(dict(row) if row else None, previous):
+                    # Seed children before the shell can exit and reparent them.
+                    branch = {child: info for child, info in tracked.items()
+                              if info['event'] == event_id and child in table and
+                              info['birth'] == table[child]['birth']}
+                    branch[pid] = {'birth': table[pid]['birth'], 'event': event_id, 'root': True}
+                    extend_tracking(table, branch)
+                    for child, info in branch.items():
+                        if child not in tracked or tracked[child]['birth'] != info['birth']:
+                            tracked[child] = info
+                    tracked[pid] = branch[pid]
+                    save_event(event)
+                    db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                               ['capture_tracking', json.dumps({str(k): v for k, v in tracked.items()})])
             (channel_dir() / (event_id + '.ack')).touch(mode=0o600)
-        except (ValueError, KeyError, OSError):
+        except (ValueError, KeyError, OSError, RuntimeError):
             continue
 
 
@@ -294,9 +339,11 @@ def hook(payload):
     if name == 'PostToolUse':
         path = event_dir() / (event_id + '.json')
         if path.exists():
+            storage.private_file(path)
             event = json.loads(path.read_text())
             event['finished'] = time.time()
-            if not event.get('armed'):
+            project = event_project(event)
+            if not event.get('armed') and (not project or project['auto_scan']):
                 record_failure('checkpoint', TimeoutError())
             if (event.get('docker_hint') or {}).get('type') == 'container':
                 output = payload.get('tool_response')
@@ -332,7 +379,7 @@ def arm(event_id, pid):
 
 def managed_processes():
     result = set()
-    for row in engine.query('SELECT id,spec FROM services'):
+    for row in engine.query('SELECT s.id,s.spec FROM services s JOIN projects p ON p.id=s.project_id WHERE p.auto_scan=1'):
         if json.loads(row['spec']).get('management') == 'observed':
             continue
         runtime = (engine.latest(row['id']) or {}).get('runtime', {})
@@ -341,14 +388,21 @@ def managed_processes():
     return result
 
 
-def record_process(event, item, ports):
-    cwd = process_cwd(item['pid'], event['cwd'])
+def record_process(event, item, ports, cwd=None, table=None):
+    if cwd is None:
+        cwd = process_cwd(item['pid'], event['cwd'])
     # Runtime cwd may be a shared temporary directory: retain authoritative launch project.
     proj = engine.project(event['cwd'])
     fingerprint = '\0'.join([proj['id'], item['name'], cwd, ','.join(map(str, ports))])
     sid = 'observed-' + hashlib.sha256(fingerprint.encode()).hexdigest()[:24]
     current = engine.latest(sid)
-    if current and current['ended'] is None and not engine.matches(current['runtime'].get('pid'), current['runtime'].get('birth')):
+    def still_live(runtime):
+        if table is None:
+            return engine.matches(runtime.get('pid'), runtime.get('birth'))
+        entry = table.get(runtime.get('pid'))
+        return bool(entry and entry['birth'] == runtime.get('birth'))
+
+    if current and current['ended'] is None and not still_live(current['runtime']):
         engine.set_run(current['id'], ended=time.time(), state='exited')
         current = engine.latest(sid)
     if current and current['ended'] is None and current['runtime'].get('pid') != item['pid']:
@@ -359,9 +413,10 @@ def record_process(event, item, ports):
             'association': '已确认启动 shell 的后代', 'url': None}
     name = item['name'] + (' · ' + ', '.join(map(str, ports)) if ports else ' · 后台任务')
     # Observed metadata may gain ports while the process is running; no launch config exists.
-    engine.write('INSERT INTO services(id,project_id,name,kind,spec) VALUES (?,?,?,?,?) '
+    engine.write("INSERT INTO services(id,project_id,name,kind,spec,created_at,created_at_source) "
+                 "VALUES (?,?,?,?,?,?,'registered') "
                  'ON CONFLICT(id) DO UPDATE SET name=excluded.name,spec=excluded.spec',
-                 [sid, proj['id'], name, 'process' if ports else 'task', json.dumps(spec)])
+                 [sid, proj['id'], name, 'process' if ports else 'task', json.dumps(spec), engine.timestamp()])
     runtime = {'pid': item['pid'], 'birth': item['birth'], 'ports': ports}
     if not current or current['ended'] is not None or current['runtime'].get('birth') != item['birth']:
         if current and current['ended'] is None:
@@ -374,10 +429,11 @@ def record_process(event, item, ports):
 
 def record_container(event, obj):
     cid = obj['Id']
-    for row in engine.query('SELECT id,spec FROM services WHERE kind IN (?,?)', ['container', 'compose']):
+    for row in engine.query('SELECT s.id,s.spec,p.auto_scan,p.cwd FROM services s JOIN projects p '
+                            'ON p.id=s.project_id WHERE kind IN (?,?)', ['container', 'compose']):
         spec = json.loads(row['spec'])
         if spec.get('container_id') == cid:
-            if spec.get('management') == 'observed':
+            if row['auto_scan'] and row['cwd'] == str(Path(event['cwd']).resolve()) and spec.get('management') == 'observed':
                 engine.reconcile_docker(engine.service(row['id']), [obj])
             return
         labels = obj['Config'].get('Labels') or {}
@@ -391,120 +447,184 @@ def record_container(event, obj):
             'session_id': event.get('session_id'), 'tool_use_id': event.get('tool_use_id'),
             'association': '工具返回容器 ID' if not group else 'Compose 启动配置与实际标签匹配',
             'url': None}
-    engine.write('INSERT INTO services(id,project_id,name,kind,spec,group_id) VALUES (?,?,?,?,?,?) '
+    engine.write("INSERT INTO services(id,project_id,name,kind,spec,group_id,created_at,created_at_source) "
+                 "VALUES (?,?,?,?,?,?,?,'registered') "
                  'ON CONFLICT(id) DO UPDATE SET spec=excluded.spec',
                  [sid, proj['id'], obj['Name'].lstrip('/'), 'container', json.dumps(spec),
-                  'observed-' + proj['id'] + '-' + group if group else None])
+                  'observed-' + proj['id'] + '-' + group if group else None, engine.timestamp()])
     item = engine.service(sid)
     engine.reconcile_docker(item, [obj])
 
 
-def collect_containers(events):
+def collect_containers(events, policies):
     candidates = [e for e in events if e.get('armed') and e.get('docker_hint') and
                   time.time() - e.get('finished', e['armed']) < 120]
     if not candidates:
         return
-    objects = []
-    ids = engine.docker('ps', '-aq', timeout=3).splitlines()
-    if ids:
-        objects = engine.container_observation(*ids)
+    paused_ids = set()
+    for row in engine.query('SELECT s.id,s.spec FROM services s JOIN projects p ON p.id=s.project_id '
+                            "WHERE p.auto_scan=0 AND s.kind IN ('container','compose')"):
+        spec = json.loads(row['spec'])
+        if spec.get('container_id'):
+            paused_ids.add(spec['container_id'])
+        paused_ids.update(((engine.latest(row['id']) or {}).get('runtime') or {}).get('container_ids', []))
     for event in candidates:
+        previous = policies[event['id']]
+        if not scan_allowed(event_project(event), previous):
+            continue
         hint = event['docker_hint']
-        for obj in objects:
-            if hint['type'] == 'container':
-                if any(obj['Id'].startswith(cid) for cid in hint.get('ids', [])):
-                    record_container(event, obj)
+        if hint['type'] == 'container':
+            ids = hint.get('ids', [])
+        else:
+            files = hint.get('files', [])
+            if not files:
                 continue
-            labels = obj['Config'].get('Labels') or {}
-            files = {str(Path(f).resolve()) for f in (labels.get('com.docker.compose.project.config_files') or '').split(',') if f}
-            if not hint.get('files') or files != set(hint['files']):
+            ids = engine.docker('ps', '-aq', '--filter',
+                                'label=com.docker.compose.project.config_files=' + ','.join(files), timeout=3).splitlines()
+        ids = [cid for cid in ids if not any(known.startswith(cid) for known in paused_ids)]
+        for obj in engine.container_observation(*ids) if ids else []:
+            if hint['type'] != 'container':
+                labels = obj['Config'].get('Labels') or {}
+                files = {str(Path(f).resolve()) for f in (labels.get('com.docker.compose.project.config_files') or '').split(',') if f}
+                if files != set(hint['files']):
+                    continue
+                if hint.get('project') and labels.get('com.docker.compose.project') != hint['project']:
+                    continue
+                started = engine.docker_time(obj['State'].get('StartedAt'))
+                if not started or started < event['armed'] - 1:
+                    continue
+            if not obj['State']['Running']:
+                # A historical event is not evidence of a currently discoverable service.
                 continue
-            if hint.get('project') and labels.get('com.docker.compose.project') != hint['project']:
+            try:
+                with engine.mutation_lock():
+                    if scan_allowed(event_project(event), previous):
+                        record_container(event, obj)
+            except engine.MutationBusy:
                 continue
-            started = engine.docker_time(obj['State'].get('StartedAt'))
-            if started and started >= event['armed'] - 1:
-                record_container(event, obj)
+
+
+def update_observed_process(event, previous, item, ports, table):
+    pid = item['pid']
+    cwd = process_cwd(pid, event['cwd'])
+    with engine.mutation_lock():
+        if not scan_allowed(event_project(event), previous):
+            return
+        rows = engine.query('SELECT s.id,r.runtime,p.auto_scan FROM services s JOIN runs r ON r.service_id=s.id '
+                            'JOIN projects p ON p.id=s.project_id '
+                            'WHERE r.ended IS NULL AND s.spec LIKE ?', ['%"management": "observed"%'])
+        existing = next((row for row in rows if json.loads(row['runtime']).get('pid') == pid and
+                         json.loads(row['runtime']).get('birth') == item['birth']), None)
+        if existing is None:
+            record_process(event, item, ports, cwd, table)
+        elif existing['auto_scan']:
+            registered = engine.service(existing['id'])
+            # A duplicate event must not mutate a service owned by a different project.
+            owner = engine.observation_row(registered['project_id'])
+            if previous is not None and engine.observation_token(owner) != engine.observation_token(previous):
+                return
+            if previous is None and event_project(event) is None:
+                return
+            registered['spec']['ports'] = ports
+            name = item['name'] + (' · ' + ', '.join(map(str, ports)) if ports else ' · 后台任务')
+            engine.write('UPDATE services SET spec=?,name=?,kind=? WHERE id=?',
+                         [json.dumps(registered['spec']), name, 'process' if ports else 'task', registered['id']])
 
 
 def collect_once(tracked, first_seen):
     events = [e for e in load_events() if e.get('shell')]
-    table = process_table()
-    by_id = {e['id']: e for e in events}
-    # Keep only verified identities; a reused PID cannot inherit the prior association.
-    tracked = {pid: info for pid, info in tracked.items() if pid in table and table[pid]['birth'] == info['birth']}
-    for event in events:
-        shell = event['shell']
-        if shell['pid'] in table and table[shell['pid']]['birth'] == shell['birth']:
-            tracked.setdefault(shell['pid'], {'birth': shell['birth'], 'event': event['id'], 'root': True})
-    changed = True
-    while changed:
-        changed = False
-        for pid, item in table.items():
-            if pid not in tracked and item['ppid'] in tracked:
-                parent = tracked[item['ppid']]
-                tracked[pid] = {'birth': item['birth'], 'event': parent['event'], 'root': False}
-                changed = True
-    ports = listeners()
-    managed = managed_processes()
-    parents = {p['ppid'] for p in table.values()}
-    for pid, info in tracked.items():
-        if pid in managed or pid == os.getpid() or info['event'] not in by_id:
-            continue
-        key = (pid, info['birth'])
-        first_seen.setdefault(key, time.time())
-        # Listener is the service unit; portless wrapper/build trees are not duplicated.
-        if ports.get(pid) or (pid not in parents and table[pid]['name'] not in ('bash', 'zsh', 'sh') and time.time() - first_seen[key] >= 30):
-            if table[pid]['name'] in ('lsof', 'ps'):
-                continue
-            # Deduplicate the same actual process even when its port set changes.
-            rows = engine.query('SELECT s.id,r.runtime FROM services s JOIN runs r ON r.service_id=s.id '
-                                'WHERE r.ended IS NULL AND s.spec LIKE ?', ['%"management": "observed"%'])
-            existing = next((r for r in rows if json.loads(r['runtime']).get('pid') == pid and
-                             json.loads(r['runtime']).get('birth') == info['birth']), None)
-            if existing:
-                item = engine.service(existing['id']); item['spec']['ports'] = ports.get(pid, [])
-                name = table[pid]['name'] + (' · ' + ', '.join(map(str, ports[pid])) if ports.get(pid) else ' · 后台任务')
-                engine.write('UPDATE services SET spec=?,name=?,kind=? WHERE id=?',
-                             [json.dumps(item['spec']), name, 'process' if ports.get(pid) else 'task', item['id']])
-            else:
-                with engine.mutation_lock():
-                    record_process(by_id[info['event']], table[pid], ports.get(pid, []))
-    # Persist verified descendants so collector recovery can follow reparented services.
-    saved = {str(pid): value for pid, value in tracked.items()}
-    engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture_tracking', json.dumps(saved)])
-    # A recipe is attached only after the actual single-service launcher and all
-    # descendants are known. Existing explicit configurations are preserved.
+    projects = {p['cwd']: p for p in engine.query('SELECT * FROM projects')}
+    policies = {e['id']: event_project(e, projects) for e in events}
+    by_id = {e['id']: e for e in events
+             if policies[e['id']] is None or policies[e['id']]['auto_scan']}
+    enabled_observed = engine.query(
+        'SELECT s.id,s.spec,s.project_id FROM services s JOIN projects p ON p.id=s.project_id '
+        'WHERE p.auto_scan=1 AND s.spec LIKE ?', ['%"management": "observed"%'])
+    by_project = {p['id']: p for p in projects.values()}
+    prior = tracked
+    dormant = {pid: info for pid, info in tracked.items()
+               if info['event'] in policies and info['event'] not in by_id}
+    tracked = {}
+    table, ports = {}, {}
+    if by_id:
+        table = process_table()
+        # Keep paused lineage dormant so recovery can verify the same births on resume.
+        tracked = {pid: info for pid, info in prior.items()
+                   if info['event'] in by_id and pid in table and table[pid]['birth'] == info['birth']}
+        for event in by_id.values():
+            shell = event['shell']
+            if shell['pid'] in table and table[shell['pid']]['birth'] == shell['birth']:
+                tracked.setdefault(shell['pid'], {'birth': shell['birth'], 'event': event['id'], 'root': True})
+        extend_tracking(table, tracked)
+        if tracked:
+            ports = listeners()
+            managed = managed_processes()
+            parents = {p['ppid'] for p in table.values()}
+            for pid, info in tracked.items():
+                if pid in managed or pid == os.getpid() or table[pid]['name'] in ('lsof', 'ps'):
+                    continue
+                key = (pid, info['birth'])
+                first_seen.setdefault(key, time.time())
+                long_lived = pid not in parents and table[pid]['name'] not in ('bash', 'zsh', 'sh') and time.time() - first_seen[key] >= 30
+                if ports.get(pid) or long_lived:
+                    try:
+                        update_observed_process(by_id[info['event']], policies[info['event']],
+                                                table[pid], ports.get(pid, []), table)
+                    except engine.MutationBusy:
+                        continue
+    try:
+        with engine.mutation_lock():
+            allowed = {eid for eid, event in by_id.items() if scan_allowed(event_project(event), policies[eid])}
+            dormant.update({pid: info for pid, info in prior.items()
+                            if info['event'] in by_id and info['event'] not in allowed})
+            tracked = {**dormant, **{pid: info for pid, info in tracked.items() if info['event'] in allowed}}
+            saved = save_tracking(tracked)
+    except engine.MutationBusy:
+        return prior, first_seen, None
+
+    # Persist launch scope and verified recipes only against the same project and run.
     import adoption
-    for row in engine.query('SELECT id FROM services WHERE spec LIKE ?', ['%"management": "observed"%']):
-        item = engine.service(row['id'])
+    for row in enabled_observed:
+        try:
+            item = engine.service(row['id'])
+        except ValueError:
+            continue  # It may have been deleted while collecting other services.
         run = engine.latest(item['id'])
         if item['kind'] not in ('process', 'task') or not run or run['ended'] is not None or run['state'] != 'running':
             continue
         info = tracked.get(run['runtime'].get('pid')) or {}
-        event = by_id.get(info.get('event'), {})
-        if run['runtime'].get('launch_members') and (item['spec'].get('argv') or not event.get('launch_recipe')):
+        event = by_id.get(info.get('event'))
+        if not event or (run['runtime'].get('launch_members') and (item['spec'].get('argv') or not event.get('launch_recipe'))):
+            continue
+        previous = by_project.get(row['project_id'])
+        if not scan_allowed(engine.observation_row(row['project_id']), previous):
             continue
         try:
+            plan = adoption.stop_plan(item, table, saved, ports)
             with engine.mutation_lock():
-                # Re-read under the same lock used by start/configure.
-                item = engine.service(row['id'])
-                if item['spec'].get('management') == 'observed':
-                    plan = adoption.stop_plan(item, table, saved, ports)
+                if (scan_allowed(engine.observation_row(row['project_id']), previous) and
+                        scan_allowed(event_project(event), policies[event['id']]) and
+                        engine.service(item['id']) == item and engine.latest(item['id']) == run):
                     adoption.remember_scope(item, plan)
                     if not item['spec'].get('argv'):
                         adoption.remember_recipe(item, plan, event)
         except (RuntimeError, ValueError):
             pass
+
     first_seen = {key: value for key, value in first_seen.items() if key[0] in tracked}
     try:
-        collect_containers(events)
+        collect_containers(by_id.values(), policies)
         docker_error = None
     except Exception as exc:
         docker_error = record_failure('docker', exc)
-    # Reconcile ended observed runs even with no UI open.
-    for row in engine.query('SELECT id,spec FROM services'):
+    for row in enabled_observed:
         if json.loads(row['spec']).get('management') == 'observed':
-            engine.observe(row['id'])
+            try:
+                expected = engine.observation_token(by_project.get(row['project_id']))
+                engine.observe(row['id'], automatic=True, expected=expected)
+            except ValueError:
+                if engine.query('SELECT id FROM services WHERE id=?', [row['id']], True):
+                    raise
     return tracked, first_seen, docker_error
 
 

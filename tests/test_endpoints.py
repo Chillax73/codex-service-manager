@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import time
 import unittest
+import tempfile
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'backend'))
 import engine
 
@@ -53,6 +55,30 @@ class EndpointContract(unittest.TestCase):
         spec={'url':'http://user:p%40ss@localhost:52123/health','url_binding_port':'8000/tcp'}
         self.assertEqual(engine.observed_url(spec,{'ports':[{'8000/tcp':[{'HostIp':'127.0.0.1','HostPort':'53123'}]}]}),
                          'http://user:p%40ss@localhost:53123/health')
+
+    def test_pending_container_health_edit_preserves_binding_without_recreation(self):
+        mapping = {'8000/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '52123'}]}
+        old_url = 'http://localhost:52123/old'
+        new_url = 'http://localhost:52123/new'
+        with tempfile.TemporaryDirectory() as folder, patch.object(engine, 'ROOT', Path(folder).resolve()):
+            project = engine.project(folder)
+            engine.record_spec('container', project, 'container', 'container',
+                               {'container_id': 'owned', 'url': old_url, 'url_binding_port': '8000/tcp'})
+            run = engine.new_run('container', {'ports': [mapping]})
+            engine.set_run(run, state='stopped', ended=1)
+            with patch.object(engine, 'containers_for', side_effect=AssertionError('save inspected Docker')):
+                saved = engine.dispatch({'action': 'service_configure', 'id': 'container', 'url': new_url})
+            self.assertEqual(saved['spec']['url'], old_url)
+            self.assertEqual(saved['configuration']['url'], new_url)
+            stopped = {'Id': 'owned', 'State': {'Running': False}, 'NetworkSettings': {'Ports': {}}}
+            with patch.object(engine, 'containers_for', return_value=[stopped]), \
+                    patch.object(engine, 'start_docker', return_value={'state': 'running'}) as start:
+                engine.dispatch({'action': 'start', 'id': 'container'})
+            active = start.call_args.args[0]['spec']
+            self.assertEqual(active['container_id'], 'owned')
+            self.assertEqual(active['url'], new_url)
+            self.assertEqual(active['url_binding_port'], '8000/tcp')
+            self.assertIsNone(engine.service('container')['pending_spec'])
 
     def test_json_stdout_is_not_polluted_by_stderr(self):
         value=engine.command([sys.executable,'-c','import sys;print(\'{"state":"running"}\');print("warning",file=sys.stderr)'])

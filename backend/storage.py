@@ -42,7 +42,7 @@ def save_json(path, value):
         Path(temporary).unlink(missing_ok=True)
 
 
-def database(root):
+def open_database(root):
     root = private_directory(root)
     for name in ('logs', 'capture-events'):
         if (root / name).exists() or (root / name).is_symlink():
@@ -51,21 +51,4 @@ def database(root):
         private_file(root / name)
     db = sqlite3.connect(str(root / 'manager.sqlite'), timeout=30)
     db.row_factory = sqlite3.Row
-    db.execute('PRAGMA journal_mode=WAL')
-    db.executescript('''
-    CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, cwd TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL, manual INTEGER NOT NULL DEFAULT 1, codex_exit INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS services(id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
-      name TEXT NOT NULL, kind TEXT NOT NULL, spec TEXT NOT NULL, keep INTEGER NOT NULL DEFAULT 0,
-      group_id TEXT);
-    CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, service_id TEXT NOT NULL,
-      started REAL NOT NULL, ended REAL, state TEXT NOT NULL, exit_code INTEGER,
-      runtime TEXT NOT NULL DEFAULT '{}', error TEXT, log TEXT);
-    CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, target TEXT NOT NULL,
-      action TEXT NOT NULL, trigger TEXT NOT NULL, started REAL NOT NULL, ended REAL,
-      result TEXT, error TEXT);
-    CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS runs_service ON runs(service_id, started DESC);
-    ''')
-    private_file(root / 'manager.sqlite')
     return db

@@ -136,12 +136,17 @@ class ProjectManagement(unittest.TestCase):
         engine.dispatch({'action':'project_rename','id':item['project_id'],'name':'恢复的项目'})
         engine.dispatch({'action':'project_policy','id':item['project_id'],'manual':False,'codex_exit':True})
         engine.dispatch({'action':'service_keep','id':item['id'],'keep':True})
+        engine.write('UPDATE projects SET auto_scan=0, pinned=1 WHERE id=?', [item['project_id']])
+        before = engine.project_record(item['project_id'])
         result=engine.dispatch({'action':'project_delete','id':item['project_id']})
         snapshot=engine.snapshot()
         self.assertNotIn('private-test-value',json.dumps(snapshot))
         self.assertEqual(len(snapshot['deleted_projects']),1)
         restored=engine.dispatch({'action':'project_restore','id':result['trash_id']})
         self.assertEqual(restored['project']['name'],'恢复的项目')
+        for key in ('auto_scan', 'pinned', 'created_at', 'created_at_source'):
+            self.assertEqual(restored['project'][key], before[key])
+        self.assertEqual(engine.service(item['id'])['created_at'], item['created_at'])
         self.assertEqual((restored['project']['manual'],restored['project']['codex_exit']),(0,1))
         self.assertEqual(engine.latest(item['id'])['id'],item['run']['id'])
         self.assertEqual(engine.observe(item['id'])['state'],'succeeded')
@@ -173,12 +178,12 @@ class ProjectManagement(unittest.TestCase):
 
     def test_snapshot_handles_a_service_deleted_after_id_read(self):
         item=self.launch('task',argv=[sys.executable,'-c','print("snapshot")'],kind='task');self.finished(item['id'])
-        original=engine.observe;pending=[True]
-        def observe_after_delete(sid):
+        original=engine.prepare_observation;pending=[True]
+        def observe_after_delete(sid, *args):
             if sid==item['id'] and pending[0]:
                 pending[0]=False;engine.dispatch({'action':'project_delete','id':item['project_id']})
-            return original(sid)
-        with patch.object(engine,'observe',side_effect=observe_after_delete):
+            return original(sid, *args)
+        with patch.object(engine,'prepare_observation',side_effect=observe_after_delete):
             snapshot=engine.snapshot()
         self.assertEqual(snapshot['services'],[]);self.assertEqual(snapshot['projects'],[])
 

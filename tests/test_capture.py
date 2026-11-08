@@ -484,6 +484,41 @@ class CaptureAcceptance(unittest.TestCase):
             self.finish(child)
 
 
+    def test_22_pause_does_not_inspect_or_register_project_with_window_closed(self):
+        paused_project = engine.project(self.a)
+        engine.dispatch({'action': 'project_scan_policy', 'id': paused_project['id'], 'enabled': False})
+        port_a, port_b = free_port(), free_port()
+        while port_b == port_a:
+            port_b = free_port()
+        command = '/usr/bin/python3 -m http.server {} --bind 127.0.0.1'
+        paused, _ = self.submit(command.format(port_a), self.a)
+        enabled, _ = self.submit(command.format(port_b), self.b)
+        try:
+            # Read registrations directly so only the background collector can discover them.
+            until = time.time() + 12
+            while time.time() < until:
+                active = [json.loads(row['spec']) for row in engine.query('SELECT spec FROM services')]
+                if any(port_b in spec.get('ports', []) for spec in active):
+                    break
+                time.sleep(.2)
+            else:
+                self.fail('启用项目的后台服务未被采集')
+            self.assertFalse(any(port_a in spec.get('ports', []) for spec in active))
+            self.assertIsNone(paused.poll())
+            engine.dispatch({'action': 'project_scan_policy', 'id': paused_project['id'], 'enabled': True})
+            self.finish(paused)
+            resumed, _ = self.submit(command.format(port_a), self.a)
+            try:
+                found = self.wait_items([port_a])[0]
+                self.assertEqual(found['project_id'], paused_project['id'])
+            finally:
+                self.finish(resumed)
+        finally:
+            self.finish(paused)
+            self.finish(enabled)
+            engine.dispatch({'action': 'project_scan_policy', 'id': paused_project['id'], 'enabled': True})
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', choices=['core', 'projects', 'full'], default='core')

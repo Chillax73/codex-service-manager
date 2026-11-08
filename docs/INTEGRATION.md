@@ -22,7 +22,7 @@
 
 直接 Python HTTP、Node 脚本、npm dev/start、npx vite、Java jar/classpath 和 Maven spring-boot:run 的简单命令可保存结构化 argv。含重定向、后台符、管道、展开、环境赋值或敏感参数的整段命令不自动重放；只读取 PATH/LANG/JAVA_HOME，不复制完整环境。自动候选必须匹配实际单项启动器。实际 Vite 与 Maven/Spring 启动链已复验。
 
-历史对象、nohup 和复杂脚本缺少配置时，可在原生详情点击“配置启动方式…”填写仅启动该项服务的命令、实际 cwd 和必要环境；已有环境值保留，界面不显示其值。保存不启停服务。也可使用：
+历史对象、nohup 和复杂脚本缺少配置时，可在原生详情点击“配置启动方式…”填写仅启动该项服务的命令、实际 cwd 和必要环境；已有环境值保留，界面不显示其值。保存只更新下一次启动的配置。运行中的服务继续使用当前配置，重启时先停止旧运行。Docker 与 Compose 的配置编辑支持名称和健康地址，启动参数仍由原容器或 Compose 文件管理。也可使用：
 
 ```sh
 /绝对路径/codex-service-manager/scripts/csm configure-observed SERVICE_ID --cwd /项目目录 --env KEY=VALUE -- 原启动命令及参数

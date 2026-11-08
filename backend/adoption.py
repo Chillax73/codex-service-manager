@@ -140,19 +140,13 @@ def configure(req):
     item = engine.service(req['id'])
     if item['spec'].get('management') != 'observed' or item['kind'] not in ('process', 'task'):
         raise ValueError('只有观察中的本机服务需要补充启动配置')
-    argv = req.get('argv') or shlex.split(req.get('command', ''))
-    if not isinstance(argv, list) or not argv or not all(isinstance(w, str) and w for w in argv):
+    update = {'id': item['id']}
+    for key in ('argv', 'command', 'cwd', 'env'):
+        if req.get(key) is not None:
+            update[key] = req[key]
+    if not (update.get('argv') or update.get('command')):
         raise ValueError('请填写单项服务的有效启动命令')
-    cwd = str(Path(req.get('cwd') or item['spec']['cwd']).expanduser().resolve(strict=True))
-    if not Path(cwd).is_dir():
-        raise ValueError('工作目录不是文件夹')
-    env = {**engine.environment({}), **item['spec'].get('env', {}),
-           **{str(k): str(v) for k, v in (req.get('env') or {}).items()}}
-    spec = {**item['spec'], 'argv': argv, 'cwd': cwd, 'env': env,
-            'recipe_explicit': True}
-    spec.pop('recipe_candidate', None)
-    engine.write('UPDATE services SET spec=? WHERE id=?', [json.dumps(spec), item['id']])
-    return engine.observe(item['id'])
+    return engine.configure_service(update)
 
 
 def remember_recipe(item, plan, event):
@@ -188,7 +182,10 @@ def stop(item, force=False):
                 continue
             if current['birth'] != member['birth']:
                 raise RuntimeError('停止期间进程身份变化，拒绝向复用 PID 发送信号')
-            os.kill(member['pid'], signal.SIGKILL if force else signal.SIGTERM)
+            try:
+                os.kill(member['pid'], signal.SIGKILL if force else signal.SIGTERM)
+            except ProcessLookupError:
+                continue  # A verified child can exit when its launcher receives the signal.
         until = time.time() + 5
         while time.time() < until:
             remaining = [m for m in plan['members'] if engine.matches(m['pid'], m['birth'])]
