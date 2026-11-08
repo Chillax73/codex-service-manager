@@ -1,0 +1,3 @@
+interface:
+  display_name: "OpenSpec：提出变更"
+  short_description: "根据需求与代码证据生成提案、规格、设计和任务，供审查后实施。"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "OpenSpec：同步规格"
+  short_description: "智能合并增量与主规格，保留无关内容并校验结果，保持变更活动状态。"

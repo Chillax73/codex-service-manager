@@ -49,6 +49,11 @@ def main():
     compose.add_argument('--env', action='append', default=[])
     compose.add_argument('--register-only', action='store_true')
     sub.add_parser('list')
+    refresh = sub.add_parser('refresh', help='显式检查登记服务，保留自动扫描开关')
+    refresh.add_argument('project_id', nargs='?', default='all')
+    scan = sub.add_parser('project-scan', help='设置项目的自动发现与状态检查')
+    scan.add_argument('project_id')
+    scan.add_argument('enabled', choices=['on', 'off'])
     sub.add_parser('discover')
     sub.add_parser('capture-start')
     capture_policy = sub.add_parser('capture-policy', help='按规范化工作目录控制后续 hook 采集；不停止已有服务')
@@ -103,6 +108,8 @@ def main():
         req['start'] = not args.register_only
     elif args.action == 'list':
         req['action'] = 'snapshot'
+    elif args.action == 'project-scan':
+        req = {'action': 'project_scan_policy', 'id': args.project_id, 'enabled': args.enabled == 'on'}
     elif args.action == 'policy':
         req.update(action='project_policy', id=args.project_id, manual=args.manual == 'on', codex_exit=args.codex_exit == 'on')
     elif args.action == 'rename-project':

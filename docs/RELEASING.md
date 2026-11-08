@@ -4,7 +4,7 @@
 
 发布时逐项完成并在 Release 说明中记录证据：
 
-- 同步 README 的当前源码版本、CHANGELOG 最新版本、SECURITY 的支持版本和 scripts/build.sh 的版本/构建号；运行 `/usr/bin/python3 scripts/check_release.py`。
+- 同步 README、CHANGELOG、SECURITY 与 `scripts/build.sh` 的源码版本，运行 `/usr/bin/python3 scripts/check_release.py` 校验。构建后另从应用的 `Contents/Info.plist` 核对 `CFBundleVersion` 与 README 的构建号。
 - 在干净 checkout 执行 docs/TESTING.md 的核心测试与原生构建，核对打包的全部 Python 模块；记录 commit、macOS、架构、Python 和 Codex 版本。CI 矩阵的 runner 标签不能代替实际版本或芯片信息。
 - 完整项目套件单独准备 npm/Maven 依赖并执行；Docker/Compose 套件在隔离对象上复验，保存镜像 ID。原生窗口/菜单、设置滚动、退出观察器和新/旧 Codex 聊天回调分别人工验收，未完成项写明。
 - 使用 `scripts/benchmark_snapshot.py --counts 5 20 50 --samples 3` 保存本机基线。区分纯进程、健康检查、Docker/Compose；需要时增加对应场景，不能从纯任务基线推断容器开销。
