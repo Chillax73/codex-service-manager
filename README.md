@@ -4,7 +4,7 @@
 
 当前源码版本为 **1.0.0**，应用构建号为 **3**。该版本增加项目扫描管理、排序与置顶、服务配置与删除、五项状态筛选和空闲资源优化。各版本变更见 [更新记录](CHANGELOG.md)。
 
-既有 A-01 至 A-16 本机验收包含真实 Codex 退出检测，实测环境为 Apple Silicon / macOS 15.7.3。构建目标为 macOS 13+，CI 矩阵为 macOS 14 和 15。各轮覆盖与实际结果见 [验收证据索引](specs/001-service-manager/acceptance.md)。
+既有 A-01 至 A-16 本机验收包含真实 Codex 退出检测，实测环境为 Apple Silicon / macOS 15.7.3。构建目标为 macOS 13+，CI 矩阵为 macOS 15 和 26。各轮覆盖与实际结果见 [验收证据索引](specs/001-service-manager/acceptance.md)。
 
 ![真实原生窗口：仅临时测试项目和服务](docs/images/app-preview.png)
 
