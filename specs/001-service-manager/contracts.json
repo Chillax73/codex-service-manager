@@ -13,6 +13,13 @@
       "action": "snapshot"
     },
     {
+      "action": "refresh",
+      "project_id": "project-id"
+    },
+    {
+      "action": "discover"
+    },
+    {
       "action": "capture_start"
     },
     {
@@ -69,6 +76,14 @@
       "id": "service-id"
     },
     {
+      "action": "start",
+      "id": "service-id"
+    },
+    {
+      "action": "stop",
+      "id": "service-id"
+    },
+    {
       "action": "force",
       "id": "service-id"
     },
@@ -88,9 +103,53 @@
       "codex_exit": false
     },
     {
+      "action": "project_scan_policy",
+      "id": "project-id",
+      "enabled": false
+    },
+    {
+      "action": "project_scan_policy_batch",
+      "scope": "selected",
+      "ids": ["project-id"],
+      "enabled": true
+    },
+    {
+      "action": "project_pin",
+      "id": "project-id",
+      "pinned": true
+    },
+    {
+      "action": "project_sort_preferences",
+      "sort_key": "created_at",
+      "direction": "desc"
+    },
+    {
       "action": "service_keep",
       "id": "service-id",
       "keep": true
+    },
+    {
+      "action": "service_rename",
+      "id": "service-id",
+      "name": "Frontend"
+    },
+    {
+      "action": "service_configure",
+      "id": "service-id",
+      "config_revision": 0,
+      "argv": ["npm", "run", "dev"],
+      "cwd": "/absolute/project",
+      "url": "http://127.0.0.1:5173",
+      "env": {"PORT": "5173"},
+      "unset_env": ["OLD_PORT"]
+    },
+    {
+      "action": "service_delete_preview",
+      "id": "service-id"
+    },
+    {
+      "action": "service_delete",
+      "id": "service-id"
     },
     {
       "action": "end_project",
@@ -128,7 +187,7 @@
     }
   ],
   "invariants": [
-    "Mutations acquire a nonblocking exclusive lock",
+    "User mutations use an exclusive lock; scan policy requests may wait up to one second",
     "Stop failure aborts restart",
     "Snapshots omit environment values",
     "Docker engine errors produce unknown state",
@@ -149,19 +208,32 @@
     "Capture opt-out matches normalized cwd exactly and leaves existing services untouched",
     "Cleanup requires integer days in 1..36500 and preserves active/latest runs",
     "Log read and cleanup reject paths outside the manager run log namespace",
-    "Collector diagnostics store stage/type/time, never raw exception text"
+    "Collector diagnostics store stage/type/time, never raw exception text",
+    "Automatic snapshots read paused service caches without probing; explicit refresh checks only the requested project or all projects and preserves scan policy",
+    "Batch scan policy scope is all without ids or selected with a nonempty ids list; updates are atomic and return changed",
+    "Service configuration applies display name immediately and saves launch and health changes for the next successful start; a supplied stale config_revision is rejected",
+    "Service deletion verifies live state and archives the service, runs and operations without stopping the service"
   ],
   "snapshot_fields": {
     "service.management": "managed | attached (some verified manual capabilities) | observed (no current control)",
-    "service.can_start": "boolean; requires restart recipe and no unfinished launcher/tree",
+    "service.can_start": "boolean; start is available for the service type and current state",
     "service.can_stop": "boolean; verified supervisor, container or observed single-service scope",
-    "service.can_restart": "boolean; requires repeatable recipe and safe current stop scope",
+    "service.can_restart": "boolean; restart is available, subject to live verification before the operation",
     "service.can_logs": "boolean; false for observed native processes/tasks",
     "capture": "null or local collector metadata with computed alive; not a desktop hook reload status",
-    "service.can_force": "boolean; verified remaining scope after stop failure (Docker identity when available)",
+    "service.can_force": "boolean; force is available for a verified remaining process scope after a stop failure or a verified controllable container",
     "service.capability_reason": "null or reason for missing/rejected capability",
     "service.automatic_end": "boolean; false until original observed service starts through manager",
+    "service.observation_paused": "boolean; the owning project's automatic scan is paused",
+    "service.last_checked_at": "Unix seconds of the last recorded actual check, or null",
+    "service.state_fresh": "boolean; this response contains a fresh probe rather than a cached projection",
+    "service.configuration": "effective settings for the next launch, with environment keys only",
+    "service.has_pending_configuration": "boolean; launch or health changes are waiting for a successful start",
+    "service.config_revision": "integer for stale editor detection",
+    "project.auto_scan": "0 or 1; whether the project permits automatic observation",
+    "project.pinned": "0 or 1; pinned projects precede regular projects",
     "project.capture_enabled": "boolean; policy for future hooks in this exact normalized cwd",
+    "project_sort_preferences": "sort_key is name, created_at or running_count; direction is asc or desc",
     "capture_diagnostic": "null or most recent failure stage/type/at; not proof of callback delivery"
   }
 }

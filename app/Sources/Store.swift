@@ -30,6 +30,7 @@ final class Store: ObservableObject {
     var onRefresh: (() -> Void)?
     var revision = 0
     private var queuedRefresh: String?
+    private var lastRefreshStarted = -Double.infinity
     var hasPausedServices: Bool { services.contains { $0.observationPaused } }
     var runningCount: Int { services.filter { $0.running }.count }
     var filtered: [ServiceItem] {
@@ -43,10 +44,17 @@ final class Store: ObservableObject {
     func projectStatus(_ id: String) -> ProjectStatus { ProjectStatus(services.filter { $0.projectID == id }) }
     var selected: ServiceItem? { services.first { $0.id == selectedService } }
     var currentProject: ProjectItem? { projects.first { $0.id == selectedProject } }
-    func start() {
+    func start(window: NSWindow) {
         ensureWatcher()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self, weak window] _ in
+            guard let self = self else { return }
+            let visible = window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden
+            if visible || ProcessInfo.processInfo.systemUptime - self.lastRefreshStarted >= 10 {
+                self.refresh()
+            }
+        }
+        timer?.tolerance = 0.2
     }
     func ensureWatcher() {
         let process = Process()
@@ -68,6 +76,7 @@ final class Store: ObservableObject {
             return
         }
         refreshing = true
+        lastRefreshStarted = ProcessInfo.processInfo.systemUptime
         let requestRevision = revision
         let request = projectID.map { ["action": "refresh", "project_id": $0] } ?? ["action": "snapshot"]
         DispatchQueue.global(qos: .utility).async {

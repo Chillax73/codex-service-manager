@@ -235,13 +235,6 @@ struct MainView: View {
                         Label("扫描管理", systemImage: "checklist")
                     }.buttonStyle(.borderless).fixedSize()
                     Spacer(minLength: 0)
-                    if let project = store.currentProject {
-                        Menu {
-                            projectActions(project)
-                        } label: {
-                            Label("当前项目操作", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
-                        }.menuStyle(.borderlessButton).fixedSize()
-                    }
                 }.padding(10)
             }.navigationTitle("项目").navigationSplitViewColumnWidth(min: 260, ideal: sidebarWidth)
                 .background(SidebarWidthBridge(preferred: sidebarWidth) { savedSidebarWidth = $0 }.allowsHitTesting(false))
@@ -433,7 +426,17 @@ struct MainView: View {
     }
     private var serviceListHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(store.currentProject?.name ?? "全部服务").font(.title2.weight(.semibold))
+            HStack {
+                Text(store.currentProject?.name ?? "全部服务").font(.title2.weight(.semibold))
+                Spacer(minLength: 0)
+                if let project = store.currentProject {
+                    Menu {
+                        projectActions(project)
+                    } label: {
+                        Label("当前项目操作", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
+                    }.menuStyle(.borderlessButton).fixedSize().help("当前项目操作")
+                }
+            }
             Text("\(store.filtered.count) 个服务 · \(store.displayedRunningCount) 个运行中")
                 .font(.caption).foregroundStyle(.secondary)
             if let project = store.currentProject, !project.autoScan {
@@ -1084,15 +1087,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.title = "Codex Service Manager"
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView:view)
-        window.center(); showWindow()
+        window.center()
         status = NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName:"terminal",accessibilityDescription:"服务管理")
         let menu = NSMenu(); menu.delegate = self; status.menu = menu
         store.onRefresh = {[weak self] in self?.status.button?.title = " \(self?.store.runningCount ?? 0)"
             self?.status.button?.contentTintColor = self?.store.services.contains(where: { $0.problem != nil || $0.health == "unavailable" || $0.state == "unknown" }) == true ? .systemOrange : nil}
-        store.start()
+        store.start(window: window)
+        showWindow()
     }
-    @objc func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true) }
+    @objc func showWindow() {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps:true)
+        store.refresh()
+    }
     func installMainMenu() {
         let main = NSMenu()
         let applicationItem = NSMenuItem(title:"Codex Service Manager",action:nil,keyEquivalent:"")

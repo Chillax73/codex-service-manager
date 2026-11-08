@@ -164,6 +164,36 @@ class ObservationPolicyTest(unittest.TestCase):
             capture.collect_once({}, {})
         self.assertEqual(engine.query('SELECT COUNT(*) AS n FROM services', one=True)['n'], 2)
 
+    def test_collector_only_rechecks_policy_for_tracked_events(self):
+        event = {'id': 'live', 'cwd': self.projects['a']['cwd'], 'shell': {'pid': 101, 'birth': 'a'}}
+        history = [{'id': str(pid), 'cwd': self.projects['a']['cwd'], 'shell': {'pid': pid, 'birth': 'old'}}
+                   for pid in range(200, 220)]
+        table = {101: {'pid': 101, 'ppid': 1, 'birth': 'a', 'name': 'sh'}}
+        with patch.object(capture, 'process_table', return_value=table), \
+                patch.object(capture, 'listeners', return_value={}), \
+                patch.object(capture, 'managed_processes', return_value=set()), \
+                patch.object(capture, 'event_project', wraps=capture.event_project) as project:
+            tracked, _, error = capture.collect_once({}, {}, [event, *history])
+        self.assertIsNone(error)
+        self.assertEqual({pid: info['event'] for pid, info in tracked.items()}, {101: 'live'})
+        self.assertEqual([call.args[0]['id'] for call in project.call_args_list if len(call.args) == 1], ['live'])
+
+    def test_collector_persists_tracking_only_on_change(self):
+        event = {'id': 'live', 'cwd': self.projects['a']['cwd'], 'shell': {'pid': 101, 'birth': 'a'}}
+        table = {101: {'pid': 101, 'ppid': 1, 'birth': 'a', 'name': 'sh'}}
+        with patch.object(capture, 'process_table', return_value=table) as processes, \
+                patch.object(capture, 'listeners', return_value={}), \
+                patch.object(capture, 'managed_processes', return_value=set()):
+            tracked, first_seen, _ = capture.collect_once({}, {}, [event])
+            engine.write("""CREATE TRIGGER reject_tracking_rewrite BEFORE INSERT ON metadata
+                WHEN NEW.key='capture_tracking' BEGIN SELECT RAISE(FAIL, '重复写入'); END""")
+            self.assertEqual(capture.collect_once(tracked, first_seen, [event])[0], tracked)
+            engine.write('DROP TRIGGER reject_tracking_rewrite')
+            processes.return_value = {}
+            self.assertEqual(capture.collect_once(tracked, first_seen, [event])[0], {})
+        saved = engine.query("SELECT value FROM metadata WHERE key='capture_tracking'", one=True)
+        self.assertEqual(json.loads(saved['value']), {})
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,8 @@
 # 实施与验证报告
 
-更新日期：2026-10-27。原版 2026-10-12 配套完整控制已完成本机 A-01 至 A-16 验收；开发分支新增项目管理、用户级自动观察、普通启动按能力接管，以及状态颜色/筛选/项目汇总。新聊天常见路径已部署，任意聊天目标仍有旧聊天加载与发现兜底缺口。
+本文保留截至 2026-10-27 的实施和验收记录。当前分支的项目扫描、配置、菜单与状态筛选见 [体验优化验收](results/UX_0_0_3.md)，最新采集和界面轮询的测量见 [空闲资源回归](TESTING.md#空闲资源回归)。
+
+原版 2026-10-12 配套完整控制已完成本机 A-01 至 A-16 验收。此后增加项目管理、用户级自动观察、普通启动按能力接管，以及状态颜色、筛选和项目汇总。新聊天常见路径已部署，任意聊天目标仍有旧聊天加载与发现兜底缺口。
 
 发布材料见 [脱敏验收报告](results/VALIDATION.md)与 [结果摘要](results/validation-summary.json)。本文列出的原始 evidence 文件和截图仅保留本机，GitHub 不包含这些个人环境材料。
 
@@ -12,7 +14,7 @@ build/Codex Service Manager.app：SwiftUI/AppKit 主窗口、系统菜单栏、�
 
 本机服务由独立监督进程管理，核对出生身份和运行 token，脱离 Codex 工具及管理 UI 存活。停止失败禁止继续重启。本机停止超时需显式强制；容器使用 Docker 原生 5 秒 stop，保留容器和数据。
 
-最新构建已运行并通过 codesign --verify --deep --strict。实测 macOS 15.7.3 / Apple Silicon；最低构建目标 macOS 13，其他系统/架构未测。最新实际窗口见 evidence/ui-latest-window.png。
+当时的构建已运行并通过 `codesign --verify --deep --strict`。实测环境为 macOS 15.7.3 / Apple Silicon，最低构建目标为 macOS 13。当时的窗口证据见本机 `evidence/ui-latest-window.png`。
 
 ## 已通过的验证
 

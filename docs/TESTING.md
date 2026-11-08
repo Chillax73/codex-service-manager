@@ -56,6 +56,14 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_capture_docker.py
 
 本轮构建、签名和实际窗口结果见 [体验优化验收](results/UX_0_0_3.md)。CI 构建不能替代选中行、真实筛选和项目状态刷新的桌面证据；菜单栏与深色模式的未实测边界另行记录。
 
+## 空闲资源回归
+
+- **PERF-1** 后台无跟踪任务或近期 Docker 事件时，每 5 秒轮询一次，并由采集管道即时唤醒。活动跟踪保留原检查间隔。事件文件原子替换后触发缓存重读，进程关联有变化时立即保存。用核心采集套件核对启动检查点、进程重新挂接和恢复。
+- **PERF-2** 自动快照批量读取暂停服务的缓存。窗口可见时保持 2 秒刷新，关闭或隐藏后约每 10 秒更新菜单栏，重开即请求刷新。用扫描策略回归核对缓存、显式刷新范围与并发暂停。
+- **PERF-3** 对同一安装和数据分别采样窗口打开、窗口关闭以及优化前后的 CPU 和磁盘 I/O。统计 CPU 时合并 Manager 回收的短时子进程，内存记录常驻进程的实际占用，磁盘写入记录操作系统归因值。
+
+本机复验通过 65 项基础回归及 20 项核心采集回归。224 条服务记录的隔离数据集包含 196 条暂停服务，单次快照 RPC 的中位数由 540 毫秒降至 166 毫秒。新版空闲实测包含 260 条服务记录，每种状态采样约 22 至 24 秒。窗口打开、关闭后菜单栏驻留、仅后台组件运行时，CPU 分别为单核的 23.7%、9.2%、7.8%。各区间系统归因的写入均约 8 KiB。旧版在线采样时的记录数和采样方式不同，以隔离数据集的快照结果作为同负载对照。
+
 ## 真实 Vite / Spring / Python 项目
 
 Vite 7.3.7 要求 Node `^20.19.0 || >=22.12.0`（见锁文件）；Java 17+、Maven 3.6.3+、npm 必须可用。可按自己的包管理器安装 Node/Maven/JDK，设置 JAVA_HOME；`/usr/bin/python3 scripts/doctor.py --projects` 检查可执行文件。系统 PATH 优先，也可指定 `CSM_NPM`、`CSM_MAVEN` 的可执行文件绝对路径（空格无需改写源码）。
@@ -78,7 +86,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_project_docker.py
 
 Docker/Compose 可用，测试以唯一标签隔离对象并核对原有容器状态，删除仅测试拥有的容器/卷。镜像版本标签可能更新，结果须同时保留本机具体镜像 ID。
 
-`.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名验证、14 组真实进程、9 组端点、3 组目录/工具契约、13 组项目管理契约、隐私扫描、19 组核心采集、5 组 shell/策略契约（含 Bash/zsh 边界矩阵）、7 组存储/清理契约和版本一致性检查，并在独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会自动触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 手动执行 Docker/Compose 、真实失败场景及项目改名/删除/恢复。这不表示应用支持 Linux。工作流无写权限、不上传原始证据。
+`.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名、隐私扫描和版本检查，并执行本文的基础回归及项目栏、扫描策略和服务配置测试。核心采集使用 `--suite core`（20 项）。独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 上手动验证 Docker/Compose、容器失败场景和容器项目的改名、删除及恢复。应用构建目标为 macOS。工作流只读访问仓库，原始证据留在运行环境。
 
 真实主窗口、菜单栏与实际 Codex 退出继续使用 [验收索引](../specs/001-service-manager/acceptance.md) 在解锁桌面操作；引擎中的合成策略测试只能验证规则，不是实际退出证据。
 

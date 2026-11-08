@@ -878,12 +878,16 @@ def cached_observation(service_id):
     item = service(service_id)
     project = observation_row(item['project_id'])
     cached = query('SELECT * FROM service_observations WHERE service_id=?', [service_id], True)
+    return cached_service(item, bool(project and not project['auto_scan']), cached)
+
+
+def cached_service(item, paused, cached):
     projection = json.loads(cached['projection']) if cached else {
         'state': 'unknown', 'health': 'not_configured', 'run': None,
         'can_start': False, 'can_stop': False, 'can_restart': False, 'can_force': False,
         'can_logs': item['spec'].get('management') != 'observed' or item['kind'] in ('container', 'compose'),
     }
-    return public_service(item, {**projection, 'observation_paused': bool(project and not project['auto_scan']),
+    return public_service(item, {**projection, 'observation_paused': paused,
                                  'last_checked_at': cached['checked_at'] if cached else None, 'state_fresh': False})
 
 
@@ -1297,25 +1301,35 @@ def restore_project(trash_id):
 def snapshot(refresh_project=None):
     if refresh_project not in (None, 'all'):
         project_record(refresh_project)
-    rows = [row for row in query('SELECT id,project_id,spec FROM services ORDER BY name')
-            if json.loads(row['spec']).get('source') != 'internal']
     automatic = refresh_project is None
+    services = []
+    probe_ids = []
+    for row in query('SELECT s.*,p.auto_scan AS scan,o.checked_at AS checked_at,o.projection AS projection '
+                     'FROM services s LEFT JOIN projects p ON p.id=s.project_id '
+                     'LEFT JOIN service_observations o ON o.service_id=s.id ORDER BY s.name'):
+        row['spec'] = json.loads(row['spec'])
+        if row['spec'].get('source') == 'internal':
+            continue
+        scan = row.pop('scan')
+        checked_at, projection = row.pop('checked_at'), row.pop('projection')
+        should_probe = bool(scan) if automatic else refresh_project in ('all', row['project_id'])
+        if should_probe:
+            probe_ids.append(row['id'])
+        else:
+            cached = {'checked_at': checked_at, 'projection': projection} if projection is not None else None
+            services.append(cached_service(row, scan == 0, cached))
 
-    def prepare(row):
-        if not automatic and refresh_project not in ('all', row['project_id']):
-            return None
+    def prepare(sid):
         try:
-            return prepare_observation(row['id'], automatic)
+            return prepare_observation(sid, automatic)
         except ValueError:
-            if not query('SELECT id FROM services WHERE id=?', [row['id']], True):
+            if not query('SELECT id FROM services WHERE id=?', [sid], True):
                 return None
             raise
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        pending = list(pool.map(prepare, rows))
-    services = []
-    for row, prepared in zip(rows, pending):
-        sid = row['id']
+        pending = list(pool.map(prepare, probe_ids))
+    for sid, prepared in zip(probe_ids, pending):
         try:
             services.append(finish_observation(sid, prepared, automatic))
         except MutationBusy:

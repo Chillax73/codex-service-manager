@@ -5,12 +5,14 @@ Never reads transcripts or process environments. Commands/output are inspected o
 in memory for Docker identities; persisted events use an explicit metadata whitelist.
 """
 import argparse
+from contextlib import closing
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import select
 import shlex
 import subprocess
 import stat
@@ -22,6 +24,8 @@ import storage
 
 INTERNAL_ID = 'csm-auto-collector'
 ARM_MARKER = '# CSM_CAPTURE_ARM'
+IDLE_INTERVAL = 5
+HEARTBEAT_INTERVAL = 5
 
 
 def channel_dir():
@@ -76,12 +80,6 @@ def extend_tracking(table, tracked):
                 changed = True
 
 
-def save_tracking(tracked):
-    saved = {str(pid): value for pid, value in tracked.items()}
-    engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture_tracking', json.dumps(saved)])
-    return saved
-
-
 def receive_arms(fd, tracked):
     try:
         data = os.read(fd, 65536)
@@ -125,20 +123,23 @@ def receive_arms(fd, tracked):
             with engine.database() as db:
                 db.execute('BEGIN IMMEDIATE')
                 row = db.execute('SELECT * FROM projects WHERE cwd=?', [canonical]).fetchone()
-                if scan_allowed(dict(row) if row else None, previous):
+                allowed = scan_allowed(dict(row) if row else None, previous)
+                if allowed:
                     # Seed children before the shell can exit and reparent them.
                     branch = {child: info for child, info in tracked.items()
                               if info['event'] == event_id and child in table and
                               info['birth'] == table[child]['birth']}
                     branch[pid] = {'birth': table[pid]['birth'], 'event': event_id, 'root': True}
                     extend_tracking(table, branch)
-                    for child, info in branch.items():
-                        if child not in tracked or tracked[child]['birth'] != info['birth']:
-                            tracked[child] = info
-                    tracked[pid] = branch[pid]
+                    updated = {**tracked, **{child: info for child, info in branch.items()
+                                            if child not in tracked or tracked[child]['birth'] != info['birth']},
+                               pid: branch[pid]}
                     save_event(event)
-                    db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
-                               ['capture_tracking', json.dumps({str(k): v for k, v in tracked.items()})])
+                    if updated != tracked:
+                        db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                                   ['capture_tracking', json.dumps(updated)])
+            if allowed:
+                tracked.update(updated)
             (channel_dir() / (event_id + '.ack')).touch(mode=0o600)
         except (ValueError, KeyError, OSError, RuntimeError):
             continue
@@ -456,9 +457,13 @@ def record_container(event, obj):
     engine.reconcile_docker(item, [obj])
 
 
+def recent_docker_event(event, now):
+    return event.get('armed') and event.get('docker_hint') and now - event.get('finished', event['armed']) < 120
+
+
 def collect_containers(events, policies):
-    candidates = [e for e in events if e.get('armed') and e.get('docker_hint') and
-                  time.time() - e.get('finished', e['armed']) < 120]
+    now = time.time()
+    candidates = [event for event in events if recent_docker_event(event, now)]
     if not candidates:
         return
     paused_ids = set()
@@ -525,16 +530,27 @@ def update_observed_process(event, previous, item, ports, table):
                 return
             if previous is None and event_project(event) is None:
                 return
-            registered['spec']['ports'] = ports
             name = item['name'] + (' · ' + ', '.join(map(str, ports)) if ports else ' · 后台任务')
+            kind = 'process' if ports else 'task'
+            if registered['spec'].get('ports') == ports and registered['name'] == name and registered['kind'] == kind:
+                return
+            registered['spec']['ports'] = ports
             engine.write('UPDATE services SET spec=?,name=?,kind=? WHERE id=?',
-                         [json.dumps(registered['spec']), name, 'process' if ports else 'task', registered['id']])
+                         [json.dumps(registered['spec']), name, kind, registered['id']])
 
 
-def collect_once(tracked, first_seen):
-    events = [e for e in load_events() if e.get('shell')]
+def collect_once(tracked, first_seen, events=None):
+    if events is None:
+        events = load_events()
+    events = [e for e in events if e.get('shell')]
     projects = {p['cwd']: p for p in engine.query('SELECT * FROM projects')}
-    policies = {e['id']: event_project(e, projects) for e in events}
+    project_by_cwd = {}
+    policies = {}
+    for event in events:
+        cwd = event.get('cwd')
+        if cwd not in project_by_cwd:
+            project_by_cwd[cwd] = event_project(event, projects)
+        policies[event['id']] = project_by_cwd[cwd]
     by_id = {e['id']: e for e in events
              if policies[e['id']] is None or policies[e['id']]['auto_scan']}
     enabled_observed = engine.query(
@@ -572,17 +588,26 @@ def collect_once(tracked, first_seen):
                                                 table[pid], ports.get(pid, []), table)
                     except engine.MutationBusy:
                         continue
-    try:
-        with engine.mutation_lock():
-            allowed = {eid for eid, event in by_id.items() if scan_allowed(event_project(event), policies[eid])}
-            dormant.update({pid: info for pid, info in prior.items()
-                            if info['event'] in by_id and info['event'] not in allowed})
-            tracked = {**dormant, **{pid: info for pid, info in tracked.items() if info['event'] in allowed}}
-            saved = save_tracking(tracked)
-    except engine.MutationBusy:
-        return prior, first_seen, None
+    proposed = {**dormant, **tracked}
+    if proposed != prior:
+        try:
+            with engine.mutation_lock():
+                # Only events referenced by tracking can change what we persist.
+                tracking_events = {info['event'] for lineage in (prior, tracked) for info in lineage.values()}
+                allowed = {eid for eid in tracking_events & by_id.keys()
+                           if scan_allowed(event_project(by_id[eid]), policies[eid])}
+                dormant.update({pid: info for pid, info in prior.items()
+                                if info['event'] in by_id and info['event'] not in allowed})
+                proposed = {**dormant, **{pid: info for pid, info in tracked.items() if info['event'] in allowed}}
+                if proposed != prior:
+                    engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                                 ['capture_tracking', json.dumps(proposed)])
+        except engine.MutationBusy:
+            return prior, first_seen, None
+    tracked = proposed
 
     # Persist launch scope and verified recipes only against the same project and run.
+    saved = {str(pid): info for pid, info in tracked.items()}
     import adoption
     for row in enabled_observed:
         try:
@@ -629,8 +654,9 @@ def collect_once(tracked, first_seen):
 
 
 def collect():
-    engine.database().close()
-    with (engine.ROOT / 'capture.lock').open('a') as lock:
+    # Keep a connection open without a transaction so short-lived readers do not
+    # repeatedly tear down and recreate the database's WAL and shared memory.
+    with closing(engine.database()), (engine.ROOT / 'capture.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -640,17 +666,37 @@ def collect():
         first_seen = {}
         own = engine.identity(os.getpid())
         channel = open_channel()
+        events, event_revision = [], None
+        next_event_reload = next_heartbeat = 0
+        last_error = None
         while True:
             error = None
+            active = bool(tracked)
             try:
                 receive_arms(channel, tracked)
-                tracked, first_seen, error = collect_once(tracked, first_seen)
+                directory = event_dir().stat()
+                revision = (directory.st_ino, directory.st_mtime_ns)
+                now = time.monotonic()
+                # Hook writers replace event files atomically. The periodic reload
+                # also retries any file that could not be read on the last pass.
+                if revision != event_revision or now >= next_event_reload:
+                    events = load_events()
+                    event_revision = revision
+                    next_event_reload = now + 60
+                tracked, first_seen, error = collect_once(tracked, first_seen, events)
+                wall_time = time.time()
+                active = bool(tracked) or any(recent_docker_event(event, wall_time) for event in events)
             except Exception as exc:
                 error = record_failure('collector', exc)
-            engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture', json.dumps({
-                'pid': os.getpid(), 'birth': own['birth'], 'updated': time.time(), 'error': error,
-                'tracked': len(tracked), 'event_count': len(load_events())})])
-            time.sleep(.5)
+            now = time.monotonic()
+            if now >= next_heartbeat or error != last_error:
+                engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture', json.dumps({
+                    'pid': os.getpid(), 'birth': own['birth'], 'updated': time.time(), 'error': error,
+                    'tracked': len(tracked), 'event_count': len(events)})])
+                next_heartbeat = now + HEARTBEAT_INTERVAL
+                last_error = error
+            # A shell checkpoint wakes an idle collector immediately.
+            select.select([channel], [], [], .5 if active else IDLE_INTERVAL)
 
 
 def main():

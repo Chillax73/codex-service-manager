@@ -41,6 +41,13 @@ jobs:
         run: /usr/bin/python3 tests/test_engine.py
       - name: Project rename, delete and restore
         run: /usr/bin/python3 tests/test_projects.py
+      - name: Observation, migration, ordering and service configuration
+        run: |
+          /usr/bin/python3 tests/test_migrations.py
+          /usr/bin/python3 tests/test_observation_policy.py
+          /usr/bin/python3 tests/test_project_ordering.py
+          /usr/bin/python3 tests/test_service_ordering.py
+          /usr/bin/python3 tests/test_service_settings.py
       - name: Core automatic capture (no npm or Maven fixtures)
         run: /usr/bin/python3 tests/test_capture.py --suite core
       - name: Native build
