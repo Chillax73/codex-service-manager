@@ -93,12 +93,22 @@ final class CachedSnapshotConnection {
     private func readLine(_ handle: FileHandle) throws -> Data {
         let deadline = ProcessInfo.processInfo.systemUptime + 4
         var bytes = [UInt8](repeating: 0, count: 8192)
+        var scanned = 0
         while buffered.count <= 64 * 1024 * 1024 {
-            if let newline = buffered.firstIndex(of: 10) {
+            // Search only newly received bytes. Rescanning a growing snapshot is quadratic.
+            let newlineOffset: Int? = buffered.withUnsafeBytes { raw in
+                guard scanned < raw.count, let base = raw.baseAddress,
+                      let match = memchr(base.advanced(by: scanned), 10, raw.count - scanned)
+                else { return nil }
+                return base.distance(to: UnsafeRawPointer(match))
+            }
+            if let offset = newlineOffset {
+                let newline = buffered.index(buffered.startIndex, offsetBy: offset)
                 let line = buffered.prefix(upTo: newline)
                 buffered.removeSubrange(...newline)
                 return Data(line)
             }
+            scanned = buffered.count
             let left = deadline - ProcessInfo.processInfo.systemUptime
             guard left > 0 else { throw unavailable() }
             var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
