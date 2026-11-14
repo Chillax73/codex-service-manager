@@ -12,7 +12,18 @@ final class Store: ObservableObject {
     @Published var services: [ServiceItem] = [] { didSet { rebuildServices() } }
     @Published var operations: [[String: Any]] = []
     @Published var selectedProject = "all" { didSet { rebuildFilter() } }
-    @Published var selectedService: String? = nil
+    @Published var selectedService: String? = nil {
+        didSet {
+            if oldValue != selectedService {
+                detailRequestGeneration += 1
+                if selectedDetails != nil { selectedDetails = nil }
+                if !detailError.isEmpty { detailError = "" }
+            }
+        }
+    }
+    @Published private(set) var selectedDetails: ServiceItem?
+    @Published private(set) var detailError = ""
+    @Published private(set) var loadingConfiguration = false
     @Published var search = "" { didSet { rebuildFilter() } }
     @Published var filter: ServiceListStatus? { didSet { rebuildFilter() } }
     @Published var busy = false
@@ -37,6 +48,10 @@ final class Store: ObservableObject {
     private var queuedPriority = false
     private var refreshGeneration = 0
     private var manualRefreshInFlight = false
+    private var detailRequestGeneration = 0
+    private var menuRecords: [ServiceItem]?
+    private var menuSummary: [String: Any] = [:]
+    private var menuProjectNames: [String: String] = [:]
     private var lastRefreshStarted = -Double.infinity
     private weak var window: NSWindow?
     private let snapshotConnection = CachedSnapshotConnection()
@@ -70,7 +85,22 @@ final class Store: ObservableObject {
         displayedRunningCount = filtered.filter { $0.running }.count
     }
     func projectStatus(_ id: String) -> ProjectStatus { projectStatuses[id] ?? ProjectStatus([]) }
-    var selected: ServiceItem? { selectedService.flatMap { servicesByID[$0] } }
+    var selected: ServiceItem? {
+        guard let summary = selectedService.flatMap({ servicesByID[$0] }) else { return nil }
+        guard summary.isSummary else { return summary }
+        guard let detail = selectedDetails, detail.id == summary.id,
+              detail.detailRevision == summary.detailRevision else { return summary }
+        var raw = detail.raw.merging(summary.raw) { _, new in new }
+        raw["spec"] = detail.spec.merging(summary.spec) { _, new in new }
+        raw["run"] = detail.run.merging(summary.run) { _, new in new }
+        raw["summary"] = false
+        return ServiceItem(raw: raw)
+    }
+    var menuItems: [ServiceItem] { menuRecords ?? Array(services.prefix(16)) }
+    var menuRunningCount: Int { menuSummary["running"] as? Int ?? runningCount }
+    var menuHasCachedStates: Bool { observationUnavailable || (menuSummary["has_cached"] as? Bool ?? hasCachedStates) }
+    var menuNeedsAttention: Bool { (menuSummary["attention"] as? Int).map { $0 > 0 } ?? services.contains(where: needsAttention) }
+    func menuProjectName(_ id: String) -> String { menuProjectNames[id] ?? projects.first { $0.id == id }?.name ?? "项目" }
     var currentProject: ProjectItem? { projects.first { $0.id == selectedProject } }
     func start(window: NSWindow) {
         self.window = window
@@ -158,7 +188,20 @@ final class Store: ObservableObject {
             let unavailable = data["observation_available"] as? Bool != true
             if unavailable != observationUnavailable { observationUnavailable = unavailable }
         }
+        applyComponents(data)
+        if data["snapshot_format"] as? String == "menu-v1" {
+            menuRecords = (data["services"] as? [[String: Any]] ?? []).map { ServiceItem(raw: $0) }
+            menuSummary = data["summary"] as? [String: Any] ?? [:]
+            menuProjectNames = Dictionary((data["projects"] as? [[String: Any]] ?? []).compactMap { row in
+                guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
+                return (id, name)
+            }, uniquingKeysWith: { _, new in new })
+            onRefresh?()
+            return false
+        }
+        menuRecords = nil; menuSummary = [:]; menuProjectNames = [:]
         let previousRun = selected?.run
+        let previousDetailRevision = selected?.detailRevision
         applyProjectSidebar(data)
         let deleted = (data["deleted_projects"] as? [[String: Any]] ?? []).map(DeletedProjectItem.init)
         if deleted != deletedProjects { deletedProjects = deleted }
@@ -167,8 +210,21 @@ final class Store: ObservableObject {
         checkTimes.updateServices(rows)
         let updated = rows.map { ServiceItem(raw: $0) }
         if updated != services { services = updated }
-        let updatedOperations = data["operations"] as? [[String: Any]] ?? []
-        if !NSArray(array: operations).isEqual(to: updatedOperations) { operations = updatedOperations }
+        if let updatedOperations = data["operations"] as? [[String: Any]],
+           !NSArray(array: operations).isEqual(to: updatedOperations) { operations = updatedOperations }
+        if selectedProject != "all", !projects.contains(where: { $0.id == selectedProject }) { selectedProject = "all" }
+        if let id = selectedService, servicesByID[id] == nil {
+            selectedService = nil; logs = ""; history = []; logRunID = nil
+        }
+        onRefresh?()
+        guard let currentRun = selected?.run else { return false }
+        return previousDetailRevision != selected?.detailRevision ||
+            previousRun?["id"] as? String != currentRun["id"] as? String ||
+            previousRun?["state"] as? String != currentRun["state"] as? String ||
+            previousRun?["ended"] as? Double != currentRun["ended"] as? Double
+    }
+
+    private func applyComponents(_ data: [String: Any]) {
         var updatedWatcher = data["watcher"] as? [String: Any] ?? [:]
         updatedWatcher.removeValue(forKey: "updated")
         if !NSDictionary(dictionary: watcher).isEqual(to: updatedWatcher) { watcher = updatedWatcher }
@@ -179,15 +235,6 @@ final class Store: ObservableObject {
         if !NSDictionary(dictionary: capture).isEqual(to: updatedCapture) { capture = updatedCapture }
         let diagnostic = data["capture_diagnostic"] as? [String: Any] ?? [:]
         if !NSDictionary(dictionary: captureDiagnostic).isEqual(to: diagnostic) { captureDiagnostic = diagnostic }
-        if selectedProject != "all", !projects.contains(where: { $0.id == selectedProject }) { selectedProject = "all" }
-        if let id = selectedService, servicesByID[id] == nil {
-            selectedService = nil; logs = ""; history = []; logRunID = nil
-        }
-        onRefresh?()
-        guard let currentRun = selected?.run else { return false }
-        return previousRun?["id"] as? String != currentRun["id"] as? String ||
-            previousRun?["state"] as? String != currentRun["state"] as? String ||
-            previousRun?["ended"] as? Double != currentRun["ended"] as? Double
     }
 
     func perform(_ request: [String: Any], refreshAfter: Bool = true, failure: ((String) -> Void)? = nil, completion: ((Any) -> Void)? = nil) {
@@ -268,15 +315,66 @@ final class Store: ObservableObject {
         })
     }
     func action(_ action: String, _ item: ServiceItem) { perform(["action": action, "id": item.id]) }
+    @discardableResult
+    func applySelectedDetails(_ data: [String: Any], id: String, expectedRevision: String?) -> Bool {
+        guard selectedService == id, let current = servicesByID[id], current.detailRevision == expectedRevision,
+              let raw = data["service"] as? [String: Any], raw["id"] as? String == id else { return false }
+        let item = ServiceItem(raw: raw)
+        guard expectedRevision == nil || item.detailRevision == expectedRevision else { return false }
+        if selectedDetails != item { selectedDetails = item }
+        if !detailError.isEmpty { detailError = "" }
+        let updated = data["operations"] as? [[String: Any]] ?? []
+        if !NSArray(array: operations).isEqual(to: updated) { operations = updated }
+        return true
+    }
+
+    func loadServiceConfiguration(_ id: String, completion: @escaping (ServiceItem) -> Void) {
+        guard !loadingConfiguration else { return }
+        loadingConfiguration = true
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                guard let response = try rpc(["action": "service_details", "id": id]) as? [String: Any],
+                      let raw = response["service"] as? [String: Any], raw["id"] as? String == id
+                else { throw NSError(domain: "CSM", code: 1, userInfo: [NSLocalizedDescriptionKey: "服务详情不可用"]) }
+                DispatchQueue.main.async {
+                    self.loadingConfiguration = false
+                    completion(ServiceItem(raw: raw))
+                }
+            } catch {
+                DispatchQueue.main.async { self.loadingConfiguration = false; self.error = error.localizedDescription }
+            }
+        }
+    }
+
     func loadDetails() {
         guard let id = selectedService else { return }
+        detailRequestGeneration += 1
+        let generation = detailRequestGeneration
+        let expectedRevision = servicesByID[id]?.detailRevision
         DispatchQueue.global(qos: .utility).async {
+            let details: [String: Any]
+            do {
+                details = try rpc(["action": "service_details", "id": id]) as? [String: Any] ?? [:]
+            } catch {
+                DispatchQueue.main.async {
+                    if self.selectedService == id && self.detailRequestGeneration == generation {
+                        self.detailError = error.localizedDescription
+                    }
+                }
+                return
+            }
             let history = (try? rpc(["action":"history", "id":id])) as? [[String: Any]] ?? []
             let logs: String
             do { logs = try rpc(["action":"logs", "id":id]) as? String ?? "" }
             catch { logs = error.localizedDescription }
             DispatchQueue.main.async {
-                if self.selectedService == id { self.history = history; if self.logRunID == nil { self.logs = logs } }
+                guard self.selectedService == id, self.detailRequestGeneration == generation else { return }
+                guard self.applySelectedDetails(details, id: id, expectedRevision: expectedRevision) else {
+                    self.refresh(prioritize: true)
+                    return
+                }
+                if !NSArray(array: self.history).isEqual(to: history) { self.history = history }
+                if self.logRunID == nil && self.logs != logs { self.logs = logs }
             }
         }
     }

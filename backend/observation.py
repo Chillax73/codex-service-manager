@@ -174,7 +174,8 @@ def serve(stdin=sys.stdin, stdout=sys.stdout):
                     if (request.get('action') != 'snapshot_cached' or type(visible) is not bool
                             or (priority is not None and not isinstance(priority, str))):
                         raise ValueError('无效的缓存快照请求')
-                    result = engine.snapshot_cached(db, visible=visible, component_identities=observer.identities)
+                    result = engine.snapshot_cached(db, visible=visible, component_identities=observer.identities,
+                                                    snapshot_format=request.get('snapshot_format', 'full'))
                     result['observation_available'] = observer.available
                     observer.update(visible, priority)
                     response = {'ok': True, 'result': result}

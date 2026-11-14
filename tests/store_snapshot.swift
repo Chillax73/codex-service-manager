@@ -79,4 +79,47 @@ for count in [260, 1000, 5000] {
     check(store.filtered.count == count && store.projectStatus("a").total == count / 2, "large snapshot aggregate correctness")
     print("stable \(count) rows: \((ProcessInfo.processInfo.systemUptime - start) * 1000 / 5) ms/apply")
 }
-print("PASS store snapshot: stable publication, timestamp isolation, filtering, freshness, selection, mutations, 260/1000/5000 rows")
+let summaryStore = Store()
+var summaryRow = row("selected", "a")
+summaryRow["summary"] = true; summaryRow["detail_revision"] = "v1"
+summaryRow["spec"] = ["management": "observed", "url": "http://localhost"]
+var list = snapshot([summaryRow]); list["snapshot_format"] = "list-v1"
+summaryStore.applySnapshot(list); summaryStore.selectedService = "selected"
+var summaryPublications = 0
+let summaryToken = summaryStore.objectWillChange.sink { summaryPublications += 1 }
+summaryStore.applySnapshot(list)
+check(summaryPublications == 0, "stable summary version must not republish")
+var detail = row("selected", "a")
+detail["detail_revision"] = "v1"
+detail["run"] = ["id": "run-selected", "state": "running", "runtime": ["pid": 123]]
+let reply: [String: Any] = ["service": detail, "operations": [["target": "selected", "action": "rename"]]]
+check(summaryStore.applySelectedDetails(reply, id: "selected", expectedRevision: "v1"), "matching detail accepted")
+check(!summaryStore.selected!.isSummary && summaryStore.selected!.runtime["pid"] as? Int == 123, "detail runtime retained when merging summary")
+check(summaryStore.selected!.spec["argv"] != nil, "full configuration available on demand")
+var refreshedFull = row("selected", "a", "stopped")
+refreshedFull["run"] = NSNull()
+summaryStore.applySnapshot(snapshot([refreshedFull]))
+check(summaryStore.selected!.runtime.isEmpty, "full manual refresh must not resurrect a previous detail runtime")
+summaryStore.applySnapshot(list)
+summaryRow["cache_state"] = "expired"; list["services"] = [summaryRow]
+summaryStore.applySnapshot(list)
+check(summaryStore.selected!.cacheState == "expired", "freshness overrides retained detail")
+summaryRow["detail_revision"] = "v2"; list["services"] = [summaryRow]
+check(summaryStore.applySnapshot(list), "changed version requests details")
+check(summaryStore.selected!.isSummary, "old configuration hidden while new version loads")
+check(!summaryStore.applySelectedDetails(reply, id: "selected", expectedRevision: "v1"), "late previous version rejected")
+check(!summaryStore.applySelectedDetails(reply, id: "selected", expectedRevision: "v2"), "wrong response version rejected")
+summaryStore.selectedService = nil
+check(!summaryStore.applySelectedDetails(reply, id: "selected", expectedRevision: "v1"), "late previous selection rejected")
+summaryStore.selectedService = "selected"
+let menu: [String: Any] = ["snapshot_format": "menu-v1", "observation_available": true,
+    "summary": ["total": 75, "running": 70, "attention": 1, "has_cached": true],
+    "services": [row("menu-only", "new-project")], "projects": [["id": "new-project", "name": "New"]]]
+summaryStore.applySnapshot(menu)
+check(summaryStore.services.count == 1 && summaryStore.services[0].id == "selected", "menu summary does not truncate retained full list")
+check(summaryStore.selectedService == "selected", "hidden selection remains intact")
+check(summaryStore.menuItems[0].id == "menu-only" && summaryStore.menuRunningCount == 70, "menu uses current bounded rows and global count")
+check(summaryStore.menuProjectName("new-project") == "New" && summaryStore.menuNeedsAttention && summaryStore.menuHasCachedStates, "menu global warnings and new projects")
+summaryStore.applySnapshot(list)
+check(summaryStore.menuItems[0].id == "selected" && summaryStore.menuRunningCount == 1, "window refresh restores full-list menu source")
+print("PASS store snapshot: stable publication, filtering, freshness, selection, 260/1000/5000 rows, summary/detail versions and menu restoration")

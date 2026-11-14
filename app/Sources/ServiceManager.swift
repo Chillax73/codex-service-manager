@@ -333,6 +333,10 @@ struct MainView: View {
                     ScrollView {
                         VStack(alignment:.leading,spacing:14) {
                             if tab == "details" {
+                                if item.isSummary {
+                                    Text(store.detailError.isEmpty ? "正在读取服务详情…" : store.detailError)
+                                        .foregroundStyle(.secondary)
+                                } else {
                                 field("类型",item.typeName)
                                 field("管理能力",item.managementSummary)
                                 if item.observed { field("归属依据",item.spec["association"] as? String ?? "—") }
@@ -356,6 +360,7 @@ struct MainView: View {
                                     Toggle("手动结束工作时停止",isOn:Binding(get:{project.manual},set:{store.perform(["action":"project_policy","id":project.id,"manual":$0,"codex_exit":project.codexExit])})).disabled(store.busy)
                                     Toggle("退出 Codex 时停止",isOn:Binding(get:{project.codexExit},set:{store.perform(["action":"project_policy","id":project.id,"manual":project.manual,"codex_exit":$0])})).disabled(store.busy)
                                     Text("仅应用进程终止触发；关闭窗口、聊天结束不会触发。强制退出同样产生系统终止事件。").font(.caption).foregroundStyle(.secondary)
+                                }
                                 }
                             } else if tab == "logs" {
                                 HStack {
@@ -506,7 +511,7 @@ struct MainView: View {
     }
     @ViewBuilder private func serviceActions(_ item: ServiceItem) -> some View {
         Button { renamingService = item } label: { Label("重命名服务…", systemImage: "pencil") }.disabled(store.busy)
-        Button { configuringService = item } label: { Label("编辑服务配置…", systemImage: "slider.horizontal.3") }.disabled(store.busy)
+        Button { store.loadServiceConfiguration(item.id) { configuringService = $0 } } label: { Label("编辑服务配置…", systemImage: "slider.horizontal.3") }.disabled(store.busy || store.loadingConfiguration)
         Button(role: .destructive) { deletingService = item } label: { Label("删除服务…", systemImage: "trash") }.disabled(store.busy)
     }
     @ViewBuilder func projectActions(_ project: ProjectItem) -> some View {
@@ -1244,8 +1249,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status = NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName:"terminal",accessibilityDescription:"服务管理")
         let menu = NSMenu(); menu.delegate = self; status.menu = menu
-        store.onRefresh = {[weak self] in self?.status.button?.title = " \(self?.store.runningCount ?? 0)"
-            self?.status.button?.contentTintColor = self?.store.services.contains(where: { $0.problem != nil || $0.health == "unavailable" || $0.state == "unknown" }) == true ? .systemOrange : nil}
+        store.onRefresh = {[weak self] in self?.status.button?.title = " \(self?.store.menuRunningCount ?? 0)"
+            self?.status.button?.contentTintColor = self?.store.menuNeedsAttention == true ? .systemOrange : nil}
         store.start(window: window)
         showWindow()
     }
@@ -1304,14 +1309,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     func menuWillOpen(_ menu:NSMenu) {
         menu.removeAllItems()
-        let cached = store.hasCachedStates ? "（含上次已知状态）" : ""
-        let heading = NSMenuItem(title: "\(store.runningCount) 个服务运行中" + cached, action: nil, keyEquivalent: "")
+        let cached = store.menuHasCachedStates ? "（含上次已知状态）" : ""
+        let heading = NSMenuItem(title: "\(store.menuRunningCount) 个服务运行中" + cached, action: nil, keyEquivalent: "")
         menu.addItem(heading)
         menu.addItem(.separator())
-        for service in store.services.prefix(16) {
-            let project = store.projects.first { $0.id == service.projectID }
-            let row = NSMenuItem(title:(project?.name ?? "项目") + " / " + service.name + " · " + stateLabel(service.state) + (service.health == "not_configured" ? "" : " / " + stateLabel(service.health)),action:nil,keyEquivalent:"")
-            row.toolTip = project?.cwd
+        for service in store.menuItems {
+            let row = NSMenuItem(title:store.menuProjectName(service.projectID) + " / " + service.name + " · " + stateLabel(service.state) + (service.health == "not_configured" ? "" : " / " + stateLabel(service.health)),action:nil,keyEquivalent:"")
+            row.toolTip = store.projects.first { $0.id == service.projectID }?.cwd
             row.image = StatusAppearance(service.state).menuImage
             let actions = NSMenu()
             for (label,action,enabled) in [("查看详情","detail",true),("停止","stop",service.canStop),(service.canStart ? "启动":"重启",service.canStart ? "start":"restart",service.canStart || service.canRestart)] {

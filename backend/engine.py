@@ -1396,7 +1396,7 @@ def snapshot(refresh_project=None):
     return snapshot_payload(services)
 
 
-def snapshot_payload(services, *, read=query, registrations=None, component_identities=None):
+def snapshot_payload(services, *, read=query, registrations=None, component_identities=None, details=True, include_deleted=True):
     metadata = {row['key']: json.loads(row['value']) for row in read(
         "SELECT key,value FROM metadata WHERE key IN ('watcher','capture','capture_diagnostic','last_codex_exit')")}
     for key, marker in (('watcher', '--watch'), ('capture', 'capture.py')):
@@ -1408,16 +1408,63 @@ def snapshot_payload(services, *, read=query, registrations=None, component_iden
                                              else component_identities.get(key) == identity))
     services.sort(key=lambda item: (item['state'] != 'running', -(item['created_at'] or 0), item['id']))
     return {**project_sidebar(services, read=read, registrations=registrations), 'services': services,
-            'operations': read('SELECT * FROM operations ORDER BY started DESC LIMIT 100'),
+            **({'operations': read('SELECT * FROM operations ORDER BY started DESC LIMIT 100')} if details else {}),
             **{key: metadata.get(key) for key in ('watcher', 'capture', 'last_codex_exit', 'capture_diagnostic')},
-            'deleted_projects': deleted_projects(read), 'generated_at': timestamp(), 'state_dir': str(ROOT)}
+            **({'deleted_projects': deleted_projects(read)} if include_deleted else {}),
+            'generated_at': timestamp(), 'state_dir': str(ROOT)}
 
 
-def snapshot_cached(db=None, *, visible=True, component_identities=None):
+SUMMARY_FIELDS = ('id', 'project_id', 'name', 'kind', 'group_id', 'keep', 'created_at',
+                  'created_at_source', 'config_revision', 'state', 'health', 'problem',
+                  'can_stop', 'can_force', 'can_start', 'can_restart', 'capability_reason',
+                  'management', 'automatic_end', 'can_logs', 'observation_paused',
+                  'last_checked_at', 'state_fresh', 'cache_state', 'has_pending_configuration')
+
+
+def detail_revision(row):
+    # Check timestamps are separate; configuration and actual runtime changes invalidate details.
+    keys = ('id', 'project_id', 'name', 'display_name', 'kind', 'spec', 'pending_spec',
+            'config_revision', 'keep', 'group_id', 'created_at', 'created_at_source', 'projection', 'scan')
+    digest = hashlib.sha256()
+    for key in keys:
+        value = b'n' if row.get(key) is None else b'v' + str(row[key]).encode()
+        digest.update(str(len(value)).encode() + b':' + value)
+    return digest.hexdigest()
+
+
+def cached_snapshot_item(row, visible, now):
     import observation
+    row = dict(row)
+    if isinstance(row['spec'], str):
+        row['spec'] = json.loads(row['spec'])
+    paused = not row.pop('scan')
+    checked_at, projection = row.pop('checked_at'), row.pop('projection')
+    cached = {'checked_at': checked_at, 'projection': projection} if projection is not None else None
+    item = cached_service(row, paused, cached)
+    if paused:
+        item['cache_state'] = 'paused'
+    elif checked_at is None:
+        item['cache_state'] = 'pending'
+    else:
+        interval = observation.interval(row['kind'], row['spec'], item, visible)
+        item['cache_state'] = 'expired' if now - checked_at > interval + 4 else 'recent'
+    return item
+
+
+def service_summary(item, revision):
+    return {**{key: item.get(key) for key in SUMMARY_FIELDS}, 'summary': True,
+            'detail_revision': revision,
+            'spec': {key: item['spec'].get(key) for key in ('management', 'url')},
+            'run': {key: (item.get('run') or {}).get(key) for key in ('id', 'state', 'started', 'ended')}}
+
+
+def snapshot_cached(db=None, *, visible=True, component_identities=None, snapshot_format='full'):
+    if snapshot_format not in ('full', 'list-v1', 'menu-v1') or type(visible) is not bool:
+        raise ValueError('Invalid snapshot format')
     if db is None:
         with contextlib.closing(storage.open_snapshot_database(ROOT)) as db:
-            return snapshot_cached(db, visible=visible, component_identities=component_identities)
+            return snapshot_cached(db, visible=visible, component_identities=component_identities,
+                                   snapshot_format=snapshot_format)
 
     def read(sql, params=(), one=False):
         rows = [dict(row) for row in db.execute(sql, params)]
@@ -1429,23 +1476,52 @@ def snapshot_cached(db=None, *, visible=True, component_identities=None):
         registrations = read(SNAPSHOT_ROWS)
         services = []
         for row in registrations:
-            row['spec'] = json.loads(row['spec'])
-            if row['spec'].get('source') == 'internal':
+            spec = json.loads(row['spec'])
+            if spec.get('source') == 'internal':
+                row['spec'] = spec
                 continue
-            paused = not row.pop('scan')
-            checked_at, projection = row.pop('checked_at'), row.pop('projection')
-            cached = {'checked_at': checked_at, 'projection': projection} if projection is not None else None
-            item = cached_service(row, paused, cached)
-            if paused:
-                item['cache_state'] = 'paused'
-            elif checked_at is None:
-                item['cache_state'] = 'pending'
-            else:
-                interval = observation.interval(row['kind'], row['spec'], item, visible)
-                item['cache_state'] = 'expired' if now - checked_at > interval + 4 else 'recent'
+            revision = detail_revision(row) if snapshot_format != 'full' else None
+            row['spec'] = spec
+            item = cached_snapshot_item(row, visible, now)
+            if snapshot_format != 'full':
+                item = service_summary(item, revision)
             services.append(item)
-        return snapshot_payload(services, read=read, registrations=registrations,
-                                component_identities=component_identities or {})
+        payload = snapshot_payload(services, read=read, registrations=registrations,
+                                   component_identities=component_identities or {},
+                                   details=snapshot_format == 'full', include_deleted=snapshot_format != 'menu-v1')
+        if snapshot_format == 'full':
+            return payload
+        payload['snapshot_format'] = snapshot_format
+        payload['summary'] = {
+            'total': len(services), 'running': sum(item['state'] == 'running' for item in services),
+            'attention': sum(item['state'] not in ('running', 'starting', 'stopping', 'stopped', 'exited',
+                                                  'never_started', 'succeeded', 'cancelled') or
+                             bool(item['problem']) or item['health'] == 'unavailable' for item in services),
+            'has_cached': any(item['cache_state'] != 'recent' for item in services),
+            'has_paused': any(item['observation_paused'] for item in services)}
+        if snapshot_format == 'menu-v1':
+            payload['services'] = services[:16]
+            ids = {item['project_id'] for item in payload['services']}
+            payload['projects'] = [project for project in payload['projects'] if project['id'] in ids]
+            payload.pop('deleted_projects', None)
+        return payload
+
+
+def service_details(service_id):
+    if not isinstance(service_id, str) or not service_id:
+        raise ValueError('Invalid service ID')
+    with contextlib.closing(storage.open_snapshot_database(ROOT)) as db, db:
+        db.execute('BEGIN')
+        sql = SNAPSHOT_ROWS.replace(' ORDER BY s.name', ' WHERE s.id=?')
+        row = db.execute(sql, [service_id]).fetchone()
+        if row is None:
+            raise ValueError('Service no longer exists')
+        row = dict(row)
+        item = cached_snapshot_item(row, True, timestamp())
+        item['detail_revision'] = detail_revision(row)
+        operations = [dict(value) for value in db.execute(
+            'SELECT * FROM operations WHERE target=? ORDER BY started DESC LIMIT 100', [service_id])]
+        return {'service': item, 'operations': operations}
 
 
 def batch(req, trigger='user'):
@@ -1592,7 +1668,9 @@ def dispatch(req):
     if action == 'snapshot':
         return snapshot()
     if action == 'snapshot_cached':
-        return snapshot_cached()
+        return snapshot_cached(visible=req.get('visible', True), snapshot_format=req.get('snapshot_format', 'full'))
+    if action == 'service_details':
+        return service_details(req.get('id'))
     if action == 'refresh':
         project_id = req.get('project_id', 'all')
         if not isinstance(project_id, str) or not project_id:

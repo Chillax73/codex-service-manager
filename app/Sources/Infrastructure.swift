@@ -51,6 +51,7 @@ final class CachedSnapshotConnection {
                 if process == nil { try start() }
                 guard let input = input, let output = output else { throw unavailable() }
                 var request: [String: Any] = ["action": "snapshot_cached", "visible": visible]
+                request["snapshot_format"] = visible ? "list-v1" : "menu-v1"
                 request["priority_project"] = priorityProject
                 try input.write(contentsOf: JSONSerialization.data(withJSONObject: request) + Data([10]))
                 let line = try readLine(output)

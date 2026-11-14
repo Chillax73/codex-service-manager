@@ -35,6 +35,12 @@ struct DeletedProjectItem: Identifiable, Equatable {
 struct ServiceItem: Identifiable, Equatable {
     let raw: [String: Any]
     static func == (lhs: Self, rhs: Self) -> Bool {
+        // Versioned summaries cover business content; only cache age changes
+        // independently. Avoid bridging and comparing every nested dictionary.
+        if lhs.isSummary && rhs.isSummary, let revision = lhs.detailRevision,
+           !revision.isEmpty, rhs.detailRevision != nil {
+            return lhs.id == rhs.id && revision == rhs.detailRevision && lhs.cacheState == rhs.cacheState
+        }
         var left = lhs.raw, right = rhs.raw
         left.removeValue(forKey: "last_checked_at")
         right.removeValue(forKey: "last_checked_at")
@@ -63,6 +69,8 @@ struct ServiceItem: Identifiable, Equatable {
     var hasPendingConfiguration: Bool { raw["has_pending_configuration"] as? Bool ?? false }
     var configuration: [String: Any] { raw["configuration"] as? [String: Any] ?? spec }
     var configurationRevision: Int { raw["config_revision"] as? Int ?? 0 }
+    var isSummary: Bool { raw["summary"] as? Bool == true }
+    var detailRevision: String? { raw["detail_revision"] as? String }
     var isLocal: Bool { kind == "process" || kind == "task" }
     var managementSummary: String {
         if !observed { return "已接管 · 支持启停和重启" }
