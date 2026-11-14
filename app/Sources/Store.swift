@@ -9,14 +9,16 @@ final class Store: ObservableObject {
     @Published private(set) var projectSortDirection = "asc"
     @Published var deletedProjects: [DeletedProjectItem] = []
     @Published var recentlyDeletedProject: String?
-    @Published var services: [ServiceItem] = []
+    @Published var services: [ServiceItem] = [] { didSet { rebuildServices() } }
     @Published var operations: [[String: Any]] = []
-    @Published var selectedProject = "all"
+    @Published var selectedProject = "all" { didSet { rebuildFilter() } }
     @Published var selectedService: String? = nil
-    @Published var search = ""
-    @Published var filter: ServiceListStatus?
+    @Published var search = "" { didSet { rebuildFilter() } }
+    @Published var filter: ServiceListStatus? { didSet { rebuildFilter() } }
     @Published var busy = false
-    @Published var refreshing = false
+    var refreshing = false { didSet { if refreshState.loading != refreshing { refreshState.loading = refreshing } } }
+    let refreshState = RefreshState()
+    let checkTimes = CheckTimes()
     @Published private(set) var observationUnavailable = false
     @Published var error: String? = nil
     @Published var notice = ""
@@ -41,21 +43,34 @@ final class Store: ObservableObject {
     private var windowVisible: Bool {
         window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden
     }
-    var hasPausedServices: Bool { services.contains { $0.observationPaused } }
+    private var servicesByID: [String: ServiceItem] = [:]
+    private var projectStatuses: [String: ProjectStatus] = [:]
+    private var cachedStates = false
+    private(set) var hasPausedServices = false
+    private(set) var runningCount = 0
+    private(set) var filtered: [ServiceItem] = []
+    private(set) var displayedRunningCount = 0
     var hasCachedStates: Bool {
-        observationUnavailable || services.contains { $0.cacheState != "recent" }
+        observationUnavailable || cachedStates
     }
-    var runningCount: Int { services.filter { $0.running }.count }
-    var filtered: [ServiceItem] {
-        services.filter { item in
+    private func rebuildServices() {
+        servicesByID = Dictionary(services.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        projectStatuses = Dictionary(grouping: services, by: \.projectID).mapValues(ProjectStatus.init)
+        hasPausedServices = services.contains { $0.observationPaused }
+        cachedStates = services.contains { $0.cacheState != "recent" }
+        runningCount = services.filter { $0.running }.count
+        rebuildFilter()
+    }
+    private func rebuildFilter() {
+        filtered = services.filter { item in
             (selectedProject == "all" || item.projectID == selectedProject) &&
             (search.isEmpty || item.name.localizedCaseInsensitiveContains(search) || item.typeName.localizedCaseInsensitiveContains(search)) &&
             (filter?.matches(item) ?? true)
         }
+        displayedRunningCount = filtered.filter { $0.running }.count
     }
-    var displayedRunningCount: Int { filtered.filter { $0.running }.count }
-    func projectStatus(_ id: String) -> ProjectStatus { ProjectStatus(services.filter { $0.projectID == id }) }
-    var selected: ServiceItem? { services.first { $0.id == selectedService } }
+    func projectStatus(_ id: String) -> ProjectStatus { projectStatuses[id] ?? ProjectStatus([]) }
+    var selected: ServiceItem? { selectedService.flatMap { servicesByID[$0] } }
     var currentProject: ProjectItem? { projects.first { $0.id == selectedProject } }
     func start(window: NSWindow) {
         self.window = window
@@ -74,12 +89,7 @@ final class Store: ObservableObject {
     }
 
     func cacheCaption(_ item: ServiceItem) -> String? {
-        if item.observationPaused { return "已暂停自动扫描 · " + checkedLabel(item.lastCheckedAt) }
-        if item.lastCheckedAt == nil { return "尚未检查" }
-        if observationUnavailable || item.cacheState == "expired" {
-            return "状态可能过期 · " + checkedLabel(item.lastCheckedAt)
-        }
-        return nil
+        checkTimes.caption(item, unavailable: observationUnavailable)
     }
     func ensureWatcher() {
         let process = Process()
@@ -128,40 +138,58 @@ final class Store: ObservableObject {
                 DispatchQueue.main.async {
                     guard generation == self.refreshGeneration else { return }
                     guard requestRevision == self.revision else { self.finishRefresh(); return }
-                    if projectID == nil { self.observationUnavailable = data["observation_available"] as? Bool != true }
-                    let previousRun = self.selected?.run
-                    self.applyProjectSidebar(data)
-                    self.deletedProjects = (data["deleted_projects"] as? [[String: Any]] ?? []).map(DeletedProjectItem.init)
-                    if let id = self.recentlyDeletedProject, !self.deletedProjects.contains(where: { $0.id == id }) { self.recentlyDeletedProject = nil }
-                    self.services = (data["services"] as? [[String: Any]] ?? []).map { ServiceItem(raw: $0) }
-                    self.operations = data["operations"] as? [[String: Any]] ?? []
-                    self.watcher = data["watcher"] as? [String: Any] ?? [:]
-                    self.lastCodexExit = data["last_codex_exit"] as? [String: Any] ?? [:]
-                    self.capture = data["capture"] as? [String: Any] ?? [:]
-                    self.captureDiagnostic = data["capture_diagnostic"] as? [String: Any] ?? [:]
-                    if self.selectedProject != "all", !self.projects.contains(where: { $0.id == self.selectedProject }) { self.selectedProject = "all" }
-                    if let id = self.selectedService, !self.services.contains(where: { $0.id == id }) {
-                        self.selectedService = nil; self.logs = ""; self.history = []; self.logRunID = nil
-                    }
-                    self.onRefresh?()
-                    if let currentRun = self.selected?.run,
-                       (previousRun?["id"] as? String != currentRun["id"] as? String ||
-                        previousRun?["state"] as? String != currentRun["state"] as? String ||
-                        previousRun?["ended"] as? Double != currentRun["ended"] as? Double) {
-                        self.loadDetails()
-                    }
+                    let runChanged = self.applySnapshot(data, cached: projectID == nil)
+                    if runChanged { self.loadDetails() }
                     self.finishRefresh()
                 }
             } catch {
                 DispatchQueue.main.async {
                     guard generation == self.refreshGeneration else { return }
-                    if projectID == nil { self.observationUnavailable = true }
+                    if projectID == nil { if !self.observationUnavailable { self.observationUnavailable = true } }
                     else { self.error = error.localizedDescription }
                     self.finishRefresh()
                 }
             }
         }
     }
+    @discardableResult
+    func applySnapshot(_ data: [String: Any], cached: Bool = true) -> Bool {
+        if cached {
+            let unavailable = data["observation_available"] as? Bool != true
+            if unavailable != observationUnavailable { observationUnavailable = unavailable }
+        }
+        let previousRun = selected?.run
+        applyProjectSidebar(data)
+        let deleted = (data["deleted_projects"] as? [[String: Any]] ?? []).map(DeletedProjectItem.init)
+        if deleted != deletedProjects { deletedProjects = deleted }
+        if let id = recentlyDeletedProject, !deletedProjects.contains(where: { $0.id == id }) { recentlyDeletedProject = nil }
+        let rows = data["services"] as? [[String: Any]] ?? []
+        checkTimes.updateServices(rows)
+        let updated = rows.map { ServiceItem(raw: $0) }
+        if updated != services { services = updated }
+        let updatedOperations = data["operations"] as? [[String: Any]] ?? []
+        if !NSArray(array: operations).isEqual(to: updatedOperations) { operations = updatedOperations }
+        var updatedWatcher = data["watcher"] as? [String: Any] ?? [:]
+        updatedWatcher.removeValue(forKey: "updated")
+        if !NSDictionary(dictionary: watcher).isEqual(to: updatedWatcher) { watcher = updatedWatcher }
+        let exit = data["last_codex_exit"] as? [String: Any] ?? [:]
+        if !NSDictionary(dictionary: lastCodexExit).isEqual(to: exit) { lastCodexExit = exit }
+        var updatedCapture = data["capture"] as? [String: Any] ?? [:]
+        updatedCapture.removeValue(forKey: "updated")
+        if !NSDictionary(dictionary: capture).isEqual(to: updatedCapture) { capture = updatedCapture }
+        let diagnostic = data["capture_diagnostic"] as? [String: Any] ?? [:]
+        if !NSDictionary(dictionary: captureDiagnostic).isEqual(to: diagnostic) { captureDiagnostic = diagnostic }
+        if selectedProject != "all", !projects.contains(where: { $0.id == selectedProject }) { selectedProject = "all" }
+        if let id = selectedService, servicesByID[id] == nil {
+            selectedService = nil; logs = ""; history = []; logRunID = nil
+        }
+        onRefresh?()
+        guard let currentRun = selected?.run else { return false }
+        return previousRun?["id"] as? String != currentRun["id"] as? String ||
+            previousRun?["state"] as? String != currentRun["state"] as? String ||
+            previousRun?["ended"] as? Double != currentRun["ended"] as? Double
+    }
+
     func perform(_ request: [String: Any], refreshAfter: Bool = true, failure: ((String) -> Void)? = nil, completion: ((Any) -> Void)? = nil) {
         guard !busy else { return }
         busy = true; notice = "正在执行…"
@@ -194,11 +222,14 @@ final class Store: ObservableObject {
         }
     }
     private func applyProjectSidebar(_ data: [String: Any]) {
+        checkTimes.updateProjects(data["projects"] as? [[String: Any]] ?? [])
         let updated = (data["projects"] as? [[String: Any]] ?? []).map(ProjectItem.init)
         if updated != projects { projects = updated }
         if let preferences = data["project_sort_preferences"] as? [String: String] {
-            projectSortKey = preferences["sort_key"] ?? "name"
-            projectSortDirection = preferences["direction"] ?? "asc"
+            let key = preferences["sort_key"] ?? "name"
+            let direction = preferences["direction"] ?? "asc"
+            if key != projectSortKey { projectSortKey = key }
+            if direction != projectSortDirection { projectSortDirection = direction }
         }
     }
     func updateProjectSidebar(_ request: [String: Any]) {

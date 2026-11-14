@@ -57,4 +57,12 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot_reader.py 
 
 这是当前会话的范围内自审，不是独立审查。最初 3.13 MB 夹具使旧版刷新约 2 秒，错过定时周期，频率断言失败；该轮未作为最终对照。约 1.99 MB 试跑暴露计时单位问题后已修复换算，并用最终脚本重新测量。最终结论只使用最后的完整四轮数据。
 
-此结果验证固定负载下的 P0 热路径收益。合成数据暂停自动探测，因此 worker CPU 不代表正式 935 条混合服务的后台探测成本，也不推断系统温度下降幅度。正式安装的 `/Applications` 应用未替换，产物位于 `build/Codex Service Manager.app`；此次不部署、不推送。
+此结果验证固定负载下的 P0 热路径收益。合成数据暂停自动探测，因此 worker CPU 不代表正式 935 条混合服务的后台探测成本，也不推断系统温度下降幅度。原 P0 实施阶段只构建，后续经用户明确授权完成部署，见下文；未推送。
+
+## 正式部署核验（2026-11-14 10:34 CST）
+
+将 `3033f12` 构建替换到 `/Applications/Codex Service Manager.app`，签名和二进制摘要一致，保留旧包备份。升级时主窗口已退出，原退出观察器保持原身份；新版窗口经 `scripts/csm` 登记为内部组件 `csm-desktop-manager` 后启动，实际窗口已显示。
+
+真实数据预热后连续测量 30 秒（3 × 10 秒）：主窗口平均 CPU **4.57%**、snapshot-worker **11.17%**、自身监督器 **0.046%**、退出观察器 **0.071%**。10:34:18 的四个性能核心传感器（Tp01/Tp05/Tp09/Tp0D）平均 **57.78°C**、最高 **59.37°C**；传感器命名参考 [Stats 的 M2 映射](https://github.com/exelban/stats/blob/master/Modules/Sensors/values.swift)。温度受整机负载影响，不能直接与隔离 CPU 夹具混算。
+
+Java、Node、OrbStack、退出观察器的出生身份未变，Java 18080 与 Node 5173 端口仍由原进程监听，5 个运行容器的 ID、启动时间和重启次数未变。无新增业务停止/重启操作。hooks 关闭、62 个目录策略内容完全一致，采集器运行次数仍为 19。原始记录保存在 ignored 的 `.test-state/p0-deployment/`。

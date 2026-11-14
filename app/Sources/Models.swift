@@ -8,6 +8,11 @@ struct ProjectItem: Identifiable, Equatable {
     let manual: Bool, codexExit: Bool
     let autoScan, pinned, captureEnabled: Bool
     let lastCheckedAt: Double?
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.cwd == rhs.cwd &&
+        lhs.manual == rhs.manual && lhs.codexExit == rhs.codexExit &&
+        lhs.autoScan == rhs.autoScan && lhs.pinned == rhs.pinned && lhs.captureEnabled == rhs.captureEnabled
+    }
     init(_ data: [String: Any]) {
         id = data["id"] as? String ?? ""; name = data["name"] as? String ?? ""
         cwd = data["cwd"] as? String ?? ""
@@ -19,7 +24,7 @@ struct ProjectItem: Identifiable, Equatable {
         lastCheckedAt = data["last_checked_at"] as? Double
     }
 }
-struct DeletedProjectItem: Identifiable {
+struct DeletedProjectItem: Identifiable, Equatable {
     let id: String, name: String, cwd: String
     let deletedAt: Double
     init(_ data: [String: Any]) {
@@ -27,8 +32,15 @@ struct DeletedProjectItem: Identifiable {
         deletedAt = data["deleted_at"] as? Double ?? 0
     }
 }
-struct ServiceItem: Identifiable {
+struct ServiceItem: Identifiable, Equatable {
     let raw: [String: Any]
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        var left = lhs.raw, right = rhs.raw
+        left.removeValue(forKey: "last_checked_at")
+        right.removeValue(forKey: "last_checked_at")
+        // A missing check time changes pending/recent presentation even on legacy replies.
+        return lhs.cacheState == rhs.cacheState && NSDictionary(dictionary: left).isEqual(to: right)
+    }
     var id: String { raw["id"] as? String ?? "" }
     var name: String { raw["name"] as? String ?? "" }
     var projectID: String { raw["project_id"] as? String ?? "" }

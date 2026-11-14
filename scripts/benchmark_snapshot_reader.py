@@ -66,7 +66,8 @@ def guard_collector():
     assert hooks == {'hooks': {}} and 'hooks = false' in config
     count = len(json.loads(disabled[0])) if disabled else 0
     processes = run(['/bin/ps', '-axo', 'pid=,command=']).splitlines()
-    assert not any('/capture.py collect' in row for row in processes), 'collector is running'
+    assert not any('/capture.py ' in row and row.rstrip().endswith(' collect')
+                   for row in processes), 'collector is running'
     return {'disabled_cwds': count, 'collector_runs': runs, 'hooks': False}
 
 
@@ -89,7 +90,7 @@ def usage(pid):
     return values[2] + values[3]
 
 
-def fixture(root):
+def fixture(root, count=960):
     engine.ROOT = root
     db = engine.database()
     cwd = str(root)
@@ -97,27 +98,27 @@ def fixture(root):
         pid = f'project-{n:02}'
         db.execute("INSERT INTO projects(id,cwd,name,auto_scan,created_at) VALUES (?,?,?,0,1)",
                    (pid, cwd + f'/project-{n}', f'P0 测试项目 {n:02}'))
-        for j in range(40):
+        for j in range((count + 23 - n) // 24):
             sid = f'fixture-{n:02}-{j:02}'
             spec = {'argv': ['/usr/bin/true', 'x' * 600], 'cwd': cwd, 'env': {}}
             db.execute("INSERT INTO services(id,project_id,name,kind,spec,created_at) VALUES (?,?,?,'task',?,1)",
                        (sid, pid, sid, json.dumps(spec)))
     db.execute("INSERT INTO metadata VALUES ('capture_disabled_cwds',?)", [json.dumps([cwd])])
     db.commit(); db.close()
-    response = json.dumps({'ok': True, 'result': engine.snapshot_cached()}).encode() + b'\n'
-    return {'projects': 24, 'services': 960, 'wire_bytes': len(response),
+    response = json.dumps({'ok': True, 'result': engine.snapshot_cached()}, ensure_ascii=False).encode() + b'\n'
+    return {'projects': 24, 'services': count, 'wire_bytes': len(response),
             'all_project_scans_paused': True}
 
 
-def build(directory, infrastructure):
+def build(directory, infrastructure, source=None, built=None):
     directory.mkdir()
     bundle = directory / 'CSM P0 Benchmark.app'
-    shutil.copytree(BASE / 'build/Codex Service Manager.app', bundle)
+    shutil.copytree(built or BASE / 'build/Codex Service Manager.app', bundle)
     plist = bundle / 'Contents/Info.plist'
     info = plistlib.loads(plist.read_bytes())
     info['CFBundleIdentifier'] = 'local.csm.reader-benchmark.' + directory.name
     plist.write_bytes(plistlib.dumps(info))
-    source = BASE / 'app/Sources'
+    source = source or BASE / 'app/Sources'
     manager = (source / 'ServiceManager.swift').read_text()
     needle = '        showWindow()\n    }\n    @objc func showWindow()'
     assert manager.count(needle) == 1
@@ -148,12 +149,19 @@ def records(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline-infrastructure', type=Path, required=True)
+    baseline = parser.add_mutually_exclusive_group(required=True)
+    baseline.add_argument('--baseline-infrastructure', type=Path)
+    baseline.add_argument('--baseline-directory', type=Path,
+                          help='all Swift sources plus their built Codex Service Manager.app')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seconds', type=float, default=24)
+    parser.add_argument('--services', type=int, default=960)
     args = parser.parse_args()
     if args.seconds < 10:
         parser.error('sample at least 10 seconds per round')
+    if args.services < 24:
+        parser.error('at least 24 services for the 24-project fixture')
+    baseline_file = args.baseline_infrastructure or args.baseline_directory / 'Infrastructure.swift'
     before = guard_collector()
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=False)
@@ -165,14 +173,19 @@ def main():
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         locks.append(handle)  # Prevent test-only exit watchers; production is untouched.
     scale = timebase()
-    report = {'collector_before': before, 'fixture': fixture(root), 'seconds': args.seconds,
+    report = {'collector_before': before, 'fixture': fixture(root, args.services), 'seconds': args.seconds,
               'mach_timebase': scale,
-              'baseline_sha256': hashlib.sha256(args.baseline_infrastructure.read_bytes()).hexdigest(),
+              'baseline_sha256': hashlib.sha256(baseline_file.read_bytes()).hexdigest(),
               'candidate_sha256': hashlib.sha256((BASE / 'app/Sources/Infrastructure.swift').read_bytes()).hexdigest(),
               'rounds': []}
     print(json.dumps(report['fixture']), flush=True)
-    apps = {name: build(directory / name, path) for name, path in
-            [('before', args.baseline_infrastructure), ('after', BASE / 'app/Sources/Infrastructure.swift')]}
+    apps = {'before': build(directory / 'before', baseline_file, args.baseline_directory,
+                            args.baseline_directory / 'Codex Service Manager.app' if args.baseline_directory else None),
+            'after': build(directory / 'after', BASE / 'app/Sources/Infrastructure.swift')}
+    report['source_sha256'] = {
+        name: {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+               for path in sorted((directory / name).glob('*.swift'))}
+        for name in apps}
     csm = [BASE / 'scripts/csm', '--root', registry]
     for number, name in enumerate(('before', 'after', 'after', 'before')):
         sid = f'p0-{number}-{name}'
@@ -189,7 +202,7 @@ def main():
                     break
                 assert time.monotonic() < deadline, 'window did not refresh'
                 time.sleep(.25)
-            assert all(row['services'] == 960 and row['visible'] and not row['unavailable'] for row in rows)
+            assert all(row['services'] == args.services and row['visible'] and not row['unavailable'] for row in rows)
             pid = rows[-1]['pid']
             procs = [line.strip().split(None, 2) for line in run(['/bin/ps', '-axo', 'pid=,ppid=,command=']).splitlines()]
             workers = [int(p) for p, parent, cmd in procs if int(parent) == pid and cmd.endswith(' snapshot-worker')]
@@ -207,7 +220,7 @@ def main():
                                                 scale['denom'] / 1e7 / elapsed)
             refreshes = [r for r in records(root) if r['at'] >= wall]
             assert len(refreshes) >= args.seconds / 3
-            assert all(r['services'] == 960 and r['visible'] and not r['unavailable'] for r in refreshes)
+            assert all(r['services'] == args.services and r['visible'] and not r['unavailable'] for r in refreshes)
             row.update(refreshes=len(refreshes), median_refresh_ms=statistics.median(r['ms'] for r in refreshes))
             report['rounds'].append(row)
             print(json.dumps(row), flush=True)

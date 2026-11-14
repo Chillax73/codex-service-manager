@@ -59,6 +59,8 @@ jobs:
         run: ./scripts/build.sh
       - name: Native snapshot framing and recovery
         run: /usr/bin/python3 tests/test_snapshot_reader.py
+      - name: Native snapshot publication and filtering
+        run: /usr/bin/python3 tests/test_store_snapshot.py
       - name: Ad-hoc signature
         run: codesign --verify --deep --strict 'build/Codex Service Manager.app'
   dependencies:

@@ -6,6 +6,7 @@ import Darwin
 struct ProjectRow: View, Equatable {
     let project: ProjectItem
     let status: ProjectStatus
+    let checkTimes: CheckTimes
     let busy: Bool
     let onRename: () -> Void
     let onPin: () -> Void
@@ -24,8 +25,7 @@ struct ProjectRow: View, Equatable {
                 Text("\(status.total) 个服务").font(.caption).foregroundStyle(.secondary)
             }
             if !project.autoScan {
-                Text("已暂停自动扫描 · " + checkedLabel(project.lastCheckedAt))
-                    .font(.caption).foregroundStyle(.secondary)
+                ProjectCheckCaption(times: checkTimes, id: project.id)
             }
             if status.attention > 0 { StatusBadge(state:"attention",title:"需关注 \(status.attention)") }
         }.padding(.vertical,4).contextMenu {
@@ -277,9 +277,7 @@ struct MainView: View {
                                                 .help("需关注，查看服务详情")
                                         }
                                     }
-                                    if let caption = store.cacheCaption(item) {
-                                        Text(caption).font(.caption).foregroundStyle(.secondary)
-                                    }
+                                    ServiceCheckCaption(times: store.checkTimes, item: item, unavailable: store.observationUnavailable)
                                     if let url = item.url { Text(url).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1) }
                                 }
                                 Spacer()
@@ -293,7 +291,7 @@ struct MainView: View {
                     if store.observationUnavailable {
                         Text("后台状态检查暂不可用 · 显示上次结果").foregroundStyle(.orange)
                     } else {
-                        Text(store.notice.isEmpty ? (store.refreshing ? "正在更新状态…" : "显示最近检查结果") : store.notice)
+                        RefreshCaption(state: store.refreshState, notice: store.notice)
                     }
                     Spacer()
                     if let id = store.recentlyDeletedProject { Button("撤销删除") { store.restoreProject(id) }.disabled(store.busy) }
@@ -324,12 +322,7 @@ struct MainView: View {
                             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url,forType:.string) } label: { Image(systemName:"doc.on.doc") }.help("复制地址")
                         }
                     }
-                    if let caption = store.cacheCaption(item) {
-                        Text(caption)
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else if let checked = item.lastCheckedAt {
-                        Text(checkedLabel(checked)).font(.caption).foregroundStyle(.secondary)
-                    }
+                    ServiceCheckCaption(times: store.checkTimes, item: item, unavailable: store.observationUnavailable, showRecent: true)
                     if item.hasPendingConfiguration {
                         Text("配置将在下次成功启动时生效").font(.caption).foregroundStyle(.secondary)
                     }
@@ -446,8 +439,7 @@ struct MainView: View {
             Text("\(store.filtered.count) 个服务 · \(store.displayedRunningCount) 个运行中")
                 .font(.caption).foregroundStyle(.secondary)
             if let project = store.currentProject, !project.autoScan {
-                Text("已暂停自动扫描 · " + checkedLabel(project.lastCheckedAt))
-                    .font(.caption).foregroundStyle(.secondary)
+                ProjectCheckCaption(times: store.checkTimes, id: project.id)
             } else if store.selectedProject == "all", store.hasPausedServices {
                 Text("含暂停项目的上次已知状态").font(.caption).foregroundStyle(.secondary)
             }
@@ -503,7 +495,7 @@ struct MainView: View {
     private func projectSection(_ title: String, _ projects: [ProjectItem]) -> some View {
         Section(title) {
             ForEach(projects) { project in
-                ProjectRow(project: project, status: store.projectStatus(project.id), busy: store.busy,
+                ProjectRow(project: project, status: store.projectStatus(project.id), checkTimes: store.checkTimes, busy: store.busy,
                            onRename: { renamingProject = project },
                            onPin: { store.togglePin(project) },
                            onScan: { store.toggleScan(project) },

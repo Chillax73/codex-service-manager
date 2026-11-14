@@ -3,6 +3,65 @@ import SwiftUI
 import Foundation
 import Darwin
 
+final class RefreshState: ObservableObject {
+    @Published var loading = false
+}
+
+struct RefreshCaption: View {
+    @ObservedObject var state: RefreshState
+    let notice: String
+    var body: some View {
+        Text(notice.isEmpty ? (state.loading ? "正在更新状态…" : "显示最近检查结果") : notice)
+    }
+}
+
+final class CheckTimes: ObservableObject {
+    @Published private(set) var services: [String: Double] = [:]
+    @Published private(set) var projects: [String: Double] = [:]
+
+    private func times(_ rows: [[String: Any]]) -> [String: Double] {
+        Dictionary(rows.compactMap { row in
+            guard let id = row["id"] as? String, let at = row["last_checked_at"] as? Double else { return nil }
+            return (id, at)
+        }, uniquingKeysWith: { _, new in new })
+    }
+    func updateServices(_ rows: [[String: Any]]) {
+        let updated = times(rows)
+        if updated != services { services = updated }
+    }
+    func updateProjects(_ rows: [[String: Any]]) {
+        let updated = times(rows)
+        if updated != projects { projects = updated }
+    }
+    func caption(_ item: ServiceItem, unavailable: Bool, showRecent: Bool = false) -> String? {
+        let at = services[item.id]
+        if item.observationPaused { return "已暂停自动扫描 · " + checkedLabel(at) }
+        if at == nil { return "尚未检查" }
+        if unavailable || item.cacheState == "expired" { return "状态可能过期 · " + checkedLabel(at) }
+        return showRecent ? checkedLabel(at) : nil
+    }
+}
+
+struct ServiceCheckCaption: View {
+    @ObservedObject var times: CheckTimes
+    let item: ServiceItem
+    let unavailable: Bool
+    var showRecent = false
+    var body: some View {
+        if let caption = times.caption(item, unavailable: unavailable, showRecent: showRecent) {
+            Text(caption).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct ProjectCheckCaption: View {
+    @ObservedObject var times: CheckTimes
+    let id: String
+    var body: some View {
+        Text("已暂停自动扫描 · " + checkedLabel(times.projects[id])).font(.caption).foregroundStyle(.secondary)
+    }
+}
+
 func stateLabel(_ value: String) -> String {
     ["starting":"启动中", "running":"运行中", "stopping":"停止中", "stopped":"已停止", "failed":"失败",
      "unknown":"未知", "stop_failed":"停止失败", "exited":"已退出", "succeeded":"成功", "cancelled":"已取消",
