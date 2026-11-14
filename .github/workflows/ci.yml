@@ -35,6 +35,8 @@ jobs:
         run: /usr/bin/python3 tests/test_endpoints.py
       - name: Shell hook compatibility and opt-out
         run: /usr/bin/python3 tests/test_capture_shell.py
+      - name: Capture candidate queries and stale-write guards
+        run: /usr/bin/python3 tests/test_capture_candidates.py
       - name: Private storage and bounded retention
         run: /usr/bin/python3 tests/test_maintenance.py
       - name: Restore and purge deleted service records

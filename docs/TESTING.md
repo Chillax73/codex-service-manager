@@ -105,6 +105,18 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot_modes.py -
 
 原始记录包含界面应用快照耗时、三类状态变化的可见延迟，以及管理器、观察器、采集器和子进程的计数。CPU 汇总常驻管理进程及其已回收子进程，写入按 macOS 进程归因，合并短命 Python 的退出计数。测试专用的窗口切换和计数记录对两版本相同。业务夹具与 Docker 守护进程自身的资源不计入管理器开销。
 
+### P4-01 采集候选查询
+
+`PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture_candidates.py` 在独立状态验证零/多候选、260/1,000/5,000 条历史、最新运行及同时间排序、PID 复用、配置/策略/运行改变和删除后的写入保护。CI 运行该入口；测试不操作正式采集器。
+
+完整循环 CPU 对照需要保留修复前的 backend 目录，例如将 `git archive 830df31 backend` 解压到新建的 `.test-state/p4-baseline`，然后执行：
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_capture_candidates.py --baseline-backend .test-state/p4-baseline/backend --output .test-state/p4-capture-comparison --rounds 3 --seconds 60 --idle-seconds 15
+```
+
+使用尚未使用过的输出目录。每轮新建 1,000 条合成终态历史和待校正的观察缓存，运行真实 collect 循环、后台观察、ps/lsof 与 FIFO 检查点；通过 scripts/csm 在独立控制库登记测试采集器，结束时只停止测试服务和测试观察器。活动事件指向测试采集器自身，用于固定持续跟踪负载，不声称是桌面真实回调或业务服务吞吐测试。正式采集器、hooks 和项目开关不变。基准按 AB/BA/AB 交替，每轮预热后记录 15 秒无活动跟踪和 60 秒持续跟踪，包含进程自身及已回收子进程 CPU，保留每轮数据；启动时的到期观察回填也计入完整循环。此对照不包含窗口/菜单、温度因果或长时间稳定性验收。
+
 窗口可见时，以观察进程退出 8 秒、容器状态变化 14 秒、HTTP 健康变化 11 秒作为这组夹具的可见延迟预算。它们覆盖按类型调度、探测耗时和界面下一次取数。旧版用同一流程采集后再构建新版。新版可追加 `--verify-native`，在采样结束后检查长连接进程复用、重开窗口、断线提示与恢复、手动刷新及日志选择。
 
 本次三轮前后对照见 [快照与后台探测验收](results/SNAPSHOT_PROBING.md)。

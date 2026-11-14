@@ -546,6 +546,33 @@ def update_observed_process(event, previous, item, ports, table):
                          [json.dumps(registered['spec']), name, kind, registered['id']])
 
 
+def scope_candidates(tracked, events):
+    """Read only live local candidates, without one connection per historical row.
+
+    This snapshot is for discovery only. The caller still rechecks policy, service
+    and latest run under the mutation lock before saving a scope or recipe.
+    """
+    if not any(info['event'] in events for info in tracked.values()):
+        return
+    run_fields = ('id', 'service_id', 'started', 'ended', 'state', 'exit_code', 'runtime', 'error', 'log')
+    columns = ','.join('r.' + name + ' AS candidate_run_' + name for name in run_fields)
+    # Match engine.latest, including its existing ordering for equal timestamps.
+    # Fetch before closing: do not retain a connection/transaction during probes.
+    with closing(engine.database()) as db:
+        rows = [dict(row) for row in db.execute(
+            'SELECT s.*,' + columns + ' FROM services s JOIN projects p ON p.id=s.project_id '
+            'JOIN runs r ON r.id=(SELECT id FROM runs WHERE service_id=s.id ORDER BY started DESC LIMIT 1) '
+            'WHERE p.auto_scan=1 AND s.spec LIKE ? AND s.kind IN (\'process\',\'task\') '
+            'AND r.ended IS NULL AND r.state=\'running\'', ['%"management": "observed"%'])]
+    for item in rows:
+        run = {name: item.pop('candidate_run_' + name) for name in run_fields}
+        run['runtime'] = json.loads(run['runtime'])
+        if tracked.get(run['runtime'].get('pid'), {}).get('event') not in events:
+            continue
+        item['spec'] = json.loads(item['spec'])
+        yield item, run
+
+
 def collect_once(tracked, first_seen, events=None, *, event_index=None):
     if events is None:
         events = load_events()
@@ -560,9 +587,6 @@ def collect_once(tracked, first_seen, events=None, *, event_index=None):
         policies[event['id']] = project_by_cwd[cwd]
     by_id = {e['id']: e for e in events
              if policies[e['id']] is None or policies[e['id']]['auto_scan']}
-    enabled_observed = engine.query(
-        'SELECT s.id,s.spec,s.project_id FROM services s JOIN projects p ON p.id=s.project_id '
-        'WHERE p.auto_scan=1 AND s.spec LIKE ?', ['%"management": "observed"%'])
     by_project = {p['id']: p for p in projects.values()}
     prior = tracked
     dormant = {pid: info for pid, info in tracked.items()
@@ -616,25 +640,18 @@ def collect_once(tracked, first_seen, events=None, *, event_index=None):
     # Persist launch scope and verified recipes only against the same project and run.
     saved = {str(pid): info for pid, info in tracked.items()}
     import adoption
-    for row in enabled_observed:
-        try:
-            item = engine.service(row['id'])
-        except ValueError:
-            continue  # It may have been deleted while collecting other services.
-        run = engine.latest(item['id'])
-        if item['kind'] not in ('process', 'task') or not run or run['ended'] is not None or run['state'] != 'running':
-            continue
+    for item, run in scope_candidates(tracked, by_id):
         info = tracked.get(run['runtime'].get('pid')) or {}
         event = by_id.get(info.get('event'))
         if not event or (run['runtime'].get('launch_members') and (item['spec'].get('argv') or not event.get('launch_recipe'))):
             continue
-        previous = by_project.get(row['project_id'])
-        if not scan_allowed(engine.observation_row(row['project_id']), previous):
+        previous = by_project.get(item['project_id'])
+        if not scan_allowed(engine.observation_row(item['project_id']), previous):
             continue
         try:
             plan = adoption.stop_plan(item, table, saved, ports)
             with engine.mutation_lock():
-                if (scan_allowed(engine.observation_row(row['project_id']), previous) and
+                if (scan_allowed(engine.observation_row(item['project_id']), previous) and
                         scan_allowed(event_project(event), policies[event['id']]) and
                         engine.service(item['id']) == item and engine.latest(item['id']) == run):
                     adoption.remember_scope(item, plan)
