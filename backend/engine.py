@@ -100,15 +100,50 @@ def database():
         raise
 
 
+_reads = threading.local()
+
+
+@contextlib.contextmanager
+def read_context():
+    """Thread-owned connection; each SELECT finishes before external probes.
+
+    No transaction or result cache spans reads. Writes and final mutation checks
+    still see committed state; connections never cross worker threads or roots.
+    """
+    previous = getattr(_reads, 'current', None)
+    if previous is not None and previous[0] == ROOT:
+        yield
+        return
+    with contextlib.closing(database()) as db:
+        db.isolation_level = None
+        db.execute('PRAGMA query_only=ON')
+        _reads.current = (ROOT, db)
+        try:
+            yield
+        finally:
+            _reads.current = previous
+
+
 def query(sql, values=(), one=False):
-    with database() as db:
+    context = getattr(_reads, 'current', None)
+    connection = (contextlib.nullcontext(context[1]) if context and context[0] == ROOT
+                  else contextlib.closing(database()))
+    with connection as db:
         rows = [dict(r) for r in db.execute(sql, values)]
     return (rows[0] if rows else None) if one else rows
 
 
 def write(sql, values=()):
-    with database() as db:
+    with contextlib.closing(database()) as db, db:
         db.execute(sql, values)
+
+
+def live_runtimes():
+    """Latest unended runs only; shared-scope checks must include paused projects."""
+    return [(row['service_id'], json.loads(row['runtime'])) for row in query(
+        'SELECT r.service_id,r.runtime FROM services s JOIN runs r '
+        'ON r.id=(SELECT id FROM runs WHERE service_id=s.id ORDER BY started DESC LIMIT 1) '
+        'WHERE r.ended IS NULL')]
 
 
 def set_run(run_id, **fields):
@@ -777,7 +812,10 @@ def operate(service_id, action, trigger='user'):
         raise
 
 
-def probe_observation(item, run, *, background=False, managed_identities=None):
+def probe_observation(item, run, *, background=False, managed_identities=None, process_context=None):
+    if (not background or process_context is not None
+            and process_context['versions'].get(item['id']) != (item, run)):
+        process_context = None  # A replacement run must not use an older process table.
     objects = None
     changes = None
     problem = None
@@ -797,9 +835,15 @@ def probe_observation(item, run, *, background=False, managed_identities=None):
     elif observed and run and run['ended'] is None:
         runtime = run['runtime']
         try:
-            current = identity(runtime.get('pid'))
-            remaining = [m for m in runtime.get('control_members', []) if matches(m['pid'], m['birth'])]
-            launchers = [m for m in runtime.get('launch_members', []) if matches(m['pid'], m['birth'])]
+            current = (process_context['table'].get(runtime.get('pid')) if process_context is not None
+                       else identity(runtime.get('pid')))
+            def live(member):
+                if process_context is None:
+                    return matches(member['pid'], member['birth'])
+                entry = process_context['table'].get(member['pid'])
+                return bool(entry and entry['birth'] == member['birth'])
+            remaining = [m for m in runtime.get('control_members', []) if live(m)]
+            launchers = [m for m in runtime.get('launch_members', []) if live(m)]
             if current and current['birth'] == runtime.get('birth') or remaining:
                 state = run['state'] if run['state'] in ('stop_failed', 'stopping') else 'running'
             elif run['state'] == 'stop_failed':
@@ -856,7 +900,10 @@ def probe_observation(item, run, *, background=False, managed_identities=None):
             if state in ('running', 'stop_failed'):
                 try:
                     import adoption
-                    plan = adoption.stop_plan(item)
+                    plan = (adoption.stop_plan(item, process_context['table'], process_context['tracked'],
+                                               process_context['listeners'], run=run,
+                                               other_runs=process_context['runs'])
+                            if process_context is not None else adoption.stop_plan(item))
                     can_stop = True
                     can_force = state == 'stop_failed'
                     if item['spec'].get('recipe_automatic') and not adoption.recipe_matches(item['spec'], plan):
@@ -932,8 +979,9 @@ def cached_service(item, paused, cached):
                                  'last_checked_at': cached['checked_at'] if cached else None, 'state_fresh': False})
 
 
+@read_context()
 def prepare_observation(service_id, automatic=False, expected=None, *, background=False,
-                        managed_identities=None, started=None):
+                        managed_identities=None, started=None, process_context=None):
     if started is None:
         started = timestamp()
     item = service(service_id)
@@ -942,7 +990,8 @@ def prepare_observation(service_id, automatic=False, expected=None, *, backgroun
     if automatic and (not project or not project['auto_scan'] or (expected is not None and expected != token)):
         return None
     run = latest(service_id)
-    result = (probe_observation(item, run, background=True, managed_identities=managed_identities)
+    result = (probe_observation(item, run, background=True, managed_identities=managed_identities,
+                                process_context=process_context)
               if background else probe_observation(item, run))
     return item, run, token, started, timestamp(), result
 

@@ -28,11 +28,14 @@ def interval(kind, spec, projection, visible):
     return 3.5 if visible else 12
 
 
-def due_services(visible, observed_only, priority_project, now):
+def due_services(visible, observed_only, priority_project, now, observed_local=None):
     from observation_schedule import due_rows
     candidates = []
     for row in due_rows(visible, observed_only, priority_project, now, BATCH_SIZE):
         spec = json.loads(row['spec'])
+        if (observed_local is not None and row['kind'] in ('task', 'process')
+                and spec.get('management') == 'observed' and row['runtime'] and row['run_ended'] is None):
+            observed_local.append(row['id'])
         token = (row['project_id'], row['project_created_at'], row['observation_revision'])
         pid = None
         if (row['kind'] in ('task', 'process') and spec.get('management') != 'observed'
@@ -63,6 +66,37 @@ def managed_identities(pids):
     return identities
 
 
+def local_probe_context(service_ids):
+    """A single immutable observation batch, never passed to actual controls."""
+    if not service_ids:
+        return None
+    import adoption
+    import capture
+    try:
+        with engine.read_context():
+            versions = {}
+            for sid in service_ids:
+                try:
+                    versions[sid] = (engine.service(sid), engine.latest(sid))
+                except ValueError:
+                    continue
+            table = capture.process_table()
+            pids = set()
+            for item, run in versions.values():
+                runtime = (run or {}).get('runtime', {})
+                roots = [runtime.get('pid')] + [m['pid'] for key in ('control_members', 'launch_members')
+                                                for m in runtime.get(key, [])]
+                for pid in roots:
+                    if pid in table:
+                        pids.update(adoption.descendants(table, pid))
+            row = engine.query("SELECT value FROM metadata WHERE key='capture_tracking'", one=True)
+            return {'versions': versions, 'table': table,
+                    'tracked': json.loads(row['value']) if row else {},
+                    'listeners': capture.listeners(pids), 'runs': engine.live_runtimes()}
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None  # Existing individual probes retain their conservative failures.
+
+
 def observe_due(*, visible=False, observed_only=False, priority_project=None):
     """Re-evaluate due work while holding a lock independent of explicit controls."""
     with (engine.ROOT / 'observation.lock').open('a') as lock:
@@ -70,15 +104,18 @@ def observe_due(*, visible=False, observed_only=False, priority_project=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        candidates = due_services(visible, observed_only, priority_project, engine.timestamp())
+        observed_local = []
+        candidates = due_services(visible, observed_only, priority_project, engine.timestamp(), observed_local)
         if not candidates:
             return 0
         started = engine.timestamp()
         identities = managed_identities({pid for _, _, pid in candidates if type(pid) is int and pid > 0})
+        process_context = local_probe_context(observed_local)
         checked = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as workers:
             pending = {workers.submit(engine.prepare_observation, sid, True, token, background=True,
-                                      managed_identities=identities, started=started): sid
+                                      managed_identities=identities, started=started,
+                                      process_context=process_context): sid
                        for sid, token, _ in candidates}
             for future in concurrent.futures.as_completed(pending):
                 sid = pending[future]

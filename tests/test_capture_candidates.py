@@ -106,7 +106,7 @@ class CaptureCandidatesTest(unittest.TestCase):
     def run_scope_pass(self, mutate=None, bad_birth=False):
         table = {1234: {'pid': 1234, 'ppid': 1, 'birth': 'reused' if bad_birth else 'original',
                         'name': 'python3'}}
-        def plan(*args):
+        def plan(*args, **kwargs):
             if mutate:
                 mutate()
             return {'root': 1234, 'members': [table[1234]]}
