@@ -117,7 +117,7 @@ def fixture(root, count=960):
             'all_project_scans_paused': True}
 
 
-def build(directory, infrastructure, source=None, built=None):
+def build(directory, infrastructure, source=None, built=None, driver=DRIVER, manager_transform=None):
     directory.mkdir()
     bundle = directory / 'CSM P0 Benchmark.app'
     shutil.copytree(built or BASE / 'build/Codex Service Manager.app', bundle)
@@ -130,7 +130,9 @@ def build(directory, infrastructure, source=None, built=None):
     needle = '        showWindow()\n    }\n    @objc func showWindow()'
     assert manager.count(needle) == 1
     manager = manager.replace(needle, '        showWindow()\n        installReaderBenchmark()\n    }\n' +
-                              DRIVER + '    @objc func showWindow()')
+                              driver + '    @objc func showWindow()')
+    if manager_transform:
+        manager = manager_transform(manager)
     (directory / 'ServiceManager.swift').write_text(manager)
     store = (source / 'Store.swift').read_text()
     store = store.replace('    var onRefresh:',

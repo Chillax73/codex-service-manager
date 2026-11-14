@@ -1,5 +1,22 @@
 # 复现与 CI
 
+## P4-03 启用状态完整对照
+
+先构建当前候选版本，然后从 P4-01 导出后端基线；以下输出目录必须尚不存在：
+
+```sh
+./scripts/build.sh
+mkdir -p .test-state/p4-03-baseline
+git archive dac1e2c backend | tar -x -C .test-state/p4-03-baseline
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_probe_pipeline.py --baseline-backend .test-state/p4-03-baseline/backend --output .test-state/p4-03-matrix --seconds 120 --rounds 3 --count 1000
+```
+
+入口需要 macOS 原生桌面、Swift 构建工具、本机进程和回环端口权限。每组各测旧版和新版，顺序 AB/BA/AB；每版覆盖窗口无活动、菜单无活动、窗口一个 HTTP 服务和菜单三个 HTTP 服务，各 120 秒，完整运行约 50 分钟。测试驱动保持指定可见状态；不要操作测试应用或令电脑休眠。两版使用相同原生驱动、1,000 条合成终态历史，以及通过独立 csm 注册表启动的真实 HTTP 服务。FIFO 输入明确为合成检查点，不等于桌面真实 hooks 回调。
+
+采集器、snapshot-worker 和 GUI 分别记录自身/已回收子进程 CPU、RSS/footprint、磁盘写入、SQLite 连接和外部命令计数。测试还验证快照可读及模式一致、检查点确认、服务关联和切回窗口后的退出观察，正常完成或异常退出均只清理本轮拥有的服务。CPU 以单核 100% 为口径；审计计数每两秒落盘，边界存在约两秒误差。若已有本机温度辅助程序则附带传感器读数，否则记录为空。
+
+组件查询规模测试单独执行相同脚本，指定新输出目录并加 `--components-only`，覆盖 260/1,000/5,000 条历史。组件结果不能代替完整守护进程 CPU 验收。所有原始数据留在 ignored 的 `.test-state/`，正式 hooks、目录开关及业务服务不由基准入口更改。
+
 ## 基础回归（无需第三方 Python 包）
 
 ```sh
