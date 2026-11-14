@@ -546,7 +546,7 @@ def update_observed_process(event, previous, item, ports, table):
                          [json.dumps(registered['spec']), name, kind, registered['id']])
 
 
-def collect_once(tracked, first_seen, events=None):
+def collect_once(tracked, first_seen, events=None, *, event_index=None):
     if events is None:
         events = load_events()
     events = [e for e in events if e.get('shell')]
@@ -649,6 +649,8 @@ def collect_once(tracked, first_seen, events=None):
         docker_error = None
     except Exception as exc:
         docker_error = record_failure('docker', exc)
+    if event_index is not None:
+        event_index.retire(by_id.values(), table, tracked, recent_docker_event, time.time())
     return tracked, first_seen, docker_error
 
 
@@ -687,6 +689,8 @@ def collect():
         first_seen = {}
         own = engine.identity(os.getpid())
         channel = open_channel()
+        from event_index import EventIndex
+        event_index = EventIndex(event_dir())
         events, event_revision = [], None
         next_event_reload = next_heartbeat = 0
         last_error = None
@@ -702,10 +706,11 @@ def collect():
                 # Hook writers replace event files atomically. The periodic reload
                 # also retries any file that could not be read on the last pass.
                 if revision != event_revision or now >= next_event_reload:
-                    events = load_events()
+                    event_index.refresh()
                     event_revision = revision
                     next_event_reload = now + 60
-                tracked, first_seen, error = collect_once(tracked, first_seen, events)
+                events = event_index.events(tracked)
+                tracked, first_seen, error = collect_once(tracked, first_seen, events, event_index=event_index)
                 observations.tick()
                 wall_time = time.time()
                 active = bool(tracked) or any(recent_docker_event(event, wall_time) for event in events)
@@ -715,7 +720,7 @@ def collect():
             if now >= next_heartbeat or error != last_error:
                 engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture', json.dumps({
                     'pid': os.getpid(), 'birth': own['birth'], 'updated': time.time(), 'error': error,
-                    'tracked': len(tracked), 'event_count': len(events)})])
+                    'tracked': len(tracked), 'event_count': len(event_index)})])
                 next_heartbeat = now + HEARTBEAT_INTERVAL
                 last_error = error
             # A shell checkpoint wakes an idle collector immediately.

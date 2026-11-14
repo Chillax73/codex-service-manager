@@ -51,6 +51,7 @@ jobs:
           /usr/bin/python3 tests/test_observation_policy.py
           /usr/bin/python3 tests/test_snapshot_cache.py
           /usr/bin/python3 tests/test_snapshot_summary.py
+          /usr/bin/python3 tests/test_performance_indexes.py
           /usr/bin/python3 tests/test_project_ordering.py
           /usr/bin/python3 tests/test_service_ordering.py
           /usr/bin/python3 tests/test_service_settings.py

@@ -29,33 +29,17 @@ def interval(kind, spec, projection, visible):
 
 
 def due_services(visible, observed_only, priority_project, now):
+    from observation_schedule import due_rows
     candidates = []
-    rows = engine.query("""SELECT s.id,s.kind,s.spec,s.project_id,p.created_at AS project_created_at,
-        p.observation_revision,r.id AS run_id,r.state AS run_state,r.ended AS run_ended,r.runtime,
-        o.checked_at,o.projection
-        FROM services s JOIN projects p ON p.id=s.project_id AND p.auto_scan=1
-        LEFT JOIN service_observations o ON o.service_id=s.id
-        LEFT JOIN runs r ON r.id=(SELECT id FROM runs WHERE service_id=s.id ORDER BY started DESC LIMIT 1)""")
-    for row in rows:
+    for row in due_rows(visible, observed_only, priority_project, now, BATCH_SIZE):
         spec = json.loads(row['spec'])
-        if spec.get('source') == 'internal' or (observed_only and spec.get('management') != 'observed'):
-            continue
-        projection = json.loads(row['projection']) if row['projection'] else None
-        run = (projection or {}).get('run') or {}
-        changed = (run.get('id'), run.get('state'), run.get('ended')) != (
-            row['run_id'], row['run_state'], row['run_ended'])
-        checked = row['checked_at']
-        due_at = checked + interval(row['kind'], spec, projection, visible) if projection else 0
-        if changed or due_at <= now:
-            live = row['kind'] in ('container', 'compose') or row['run_state'] in engine.ACTIVE
-            priority = (row['project_id'] != priority_project, not changed, not live, due_at, row['id'])
-            token = (row['project_id'], row['project_created_at'], row['observation_revision'])
-            pid = None
-            if (row['kind'] in ('task', 'process') and spec.get('management') != 'observed'
-                    and row['runtime'] and row['run_ended'] is None):
-                pid = json.loads(row['runtime']).get('supervisor_pid')
-            candidates.append((priority, row['id'], token, pid))
-    return [(sid, token, pid) for _, sid, token, pid in sorted(candidates)[:BATCH_SIZE]]
+        token = (row['project_id'], row['project_created_at'], row['observation_revision'])
+        pid = None
+        if (row['kind'] in ('task', 'process') and spec.get('management') != 'observed'
+                and row['runtime'] and row['run_ended'] is None):
+            pid = json.loads(row['runtime']).get('supervisor_pid')
+        candidates.append((row['id'], token, pid))
+    return candidates
 
 
 def managed_identities(pids):

@@ -179,6 +179,8 @@ def main():
     parser.add_argument('--services', type=int, default=960)
     parser.add_argument('--mode', choices=('window', 'menu'), default='window')
     parser.add_argument('--rounds', type=int, choices=(2, 4), default=4)
+    parser.add_argument('--observe-idle', action='store_true',
+                        help='enable observations of cached terminal test services for scheduler comparisons')
     args = parser.parse_args()
     if args.seconds < 10:
         parser.error('sample at least 10 seconds per round')
@@ -202,6 +204,19 @@ def main():
               'baseline_sha256': hashlib.sha256(baseline_file.read_bytes()).hexdigest(),
               'candidate_sha256': hashlib.sha256((BASE / 'app/Sources/Infrastructure.swift').read_bytes()).hexdigest(),
               'rounds': []}
+    if args.observe_idle:
+        if args.seconds > 70:
+            parser.error('idle scheduler rounds must finish before the terminal observation deadline')
+        engine.observe('fixture-00-00')
+        projection = engine.query('SELECT projection FROM service_observations LIMIT 1', one=True)['projection']
+        with engine.database() as db:
+            db.execute('UPDATE projects SET auto_scan=1')
+            db.execute('INSERT OR REPLACE INTO service_observations SELECT id,?,? FROM services',
+                       [time.time(), projection])
+        report['fixture']['all_project_scans_paused'] = False
+        report['fixture']['cached_terminal_services'] = args.services
+        report['fixture']['wire_bytes'] = len(json.dumps(
+            {'ok': True, 'result': engine.snapshot_cached()}, ensure_ascii=False).encode()) + 1
     print(json.dumps(report['fixture']), flush=True)
     apps = {'before': build(directory / 'before', baseline_file, args.baseline_directory,
                             args.baseline_directory / 'Codex Service Manager.app' if args.baseline_directory else None),
@@ -218,6 +233,10 @@ def main():
         (root / 'quit').unlink(missing_ok=True)
         (root / 'bench-mode').unlink(missing_ok=True)
         (root / 'refresh.jsonl').write_text('')
+        if args.observe_idle:
+            # Start each comparable round with equally fresh terminal observations.
+            # Their normal 120/240 second deadline remains unchanged.
+            engine.write('UPDATE service_observations SET checked_at=?', [time.time()])
         try:
             launched = json.loads(run([*csm, 'launch', '--task', '--id', sid, '--name', sid,
                                        '--cwd', root, '--', apps[name], '--root', root]))
