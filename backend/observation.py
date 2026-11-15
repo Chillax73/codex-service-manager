@@ -28,7 +28,7 @@ def interval(kind, spec, projection, visible):
     return 3.5 if visible else 12
 
 
-def due_services(visible, observed_only, priority_project, now, observed_local=None):
+def due_services(visible, observed_only, priority_project, now, observed_local=None, docker_ids=None):
     from observation_schedule import due_rows
     candidates = []
     for row in due_rows(visible, observed_only, priority_project, now, BATCH_SIZE):
@@ -38,6 +38,8 @@ def due_services(visible, observed_only, priority_project, now, observed_local=N
             observed_local.append(row['id'])
         token = (row['project_id'], row['project_created_at'], row['observation_revision'])
         pid = None
+        if docker_ids is not None and row['kind'] in ('container', 'compose'):
+            docker_ids.add(row['id'])
         if (row['kind'] in ('task', 'process') and spec.get('management') != 'observed'
                 and row['runtime'] and row['run_ended'] is None):
             pid = json.loads(row['runtime']).get('supervisor_pid')
@@ -97,6 +99,70 @@ def local_probe_context(service_ids):
         return None  # Existing individual probes retain their conservative failures.
 
 
+def probe_docker_batch(workers, versions):
+    """Discover equivalent Compose groups, then inspect in the default Docker context."""
+    results, requested, groups = {}, {}, {}
+    for sid, (item, _, _, _) in versions.items():
+        spec = item['spec']
+        if item['kind'] == 'container':
+            cid = spec.get('container_id')
+            if engine.docker_full_id(cid):
+                requested[sid] = (cid,)
+            else:
+                results[sid] = (None, engine.DOCKER_PROBE_FAILURE)
+        else:
+            try:
+                project, file, cwd, member = (spec[k] for k in ('compose_project', 'file', 'cwd', 'member'))
+                if not all(isinstance(value, str) and value for value in (project, file, cwd, member)):
+                    raise ValueError('Compose 配置无效')
+                key = (project, file, cwd, tuple(sorted(spec.get('env', {}).items())),
+                       tuple(sorted(spec.get('env_unset', ()))))
+                groups.setdefault(key, []).append((sid, spec))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                results[sid] = (None, '无法确认 Compose 配置；保留既有运行')
+    started = time.monotonic()
+    deadline = started + 4
+    # Reserve part of the common budget for inspect and the optional inventory.
+    # A stalled discovery therefore cannot exhaust the budget of a healthy group.
+    discover_deadline = started + 2.5
+    pending = [(group, workers.submit(engine.compose_probe_members, group[0][1],
+                                      {spec['member'] for _, spec in group}, discover_deadline))
+               for group in groups.values()]
+    ids = {cid for candidates in requested.values() for cid in candidates}
+    for group, future in pending:
+        try:
+            discovered = future.result()
+            group_ids = {cid for candidates in discovered.values() for cid in candidates}
+            if len(ids | group_ids) > engine.DOCKER_PROBE_MAX_IDS:
+                raise ValueError('后台容器标识超限')
+        except (TimeoutError, subprocess.TimeoutExpired):
+            error = engine.DOCKER_PROBE_TIMEOUT
+        except (OSError, ValueError):
+            error = '无法确认 Compose 成员；保留既有运行'
+        else:
+            ids.update(group_ids)
+            for sid, spec in group:
+                requested[sid] = tuple(discovered[spec['member']])
+            continue
+        for sid, _ in group:
+            results[sid] = (None, error)
+
+    objects, errors = engine.docker_probe_objects(ids, deadline)
+    for sid, object_ids in requested.items():
+        item = versions[sid][0]
+        group_objects = tuple(objects[cid] for cid in object_ids if cid in objects)
+        if len(group_objects) != len(object_ids):
+            error = (errors[object_ids[0]] if item['kind'] == 'container'
+                     else '未能确认所有 Compose 容器；保留既有运行')
+            results[sid] = (None, error)
+        elif item['kind'] == 'compose' and not all(
+                engine.matches_compose_probe(obj, item['spec']) for obj in group_objects):
+            results[sid] = (None, 'Compose 成员身份不匹配；保留既有运行')
+        else:
+            results[sid] = (group_objects, None)
+    return results
+
+
 def observe_due(*, visible=False, observed_only=False, priority_project=None):
     """Re-evaluate due work while holding a lock independent of explicit controls."""
     with (engine.ROOT / 'observation.lock').open('a') as lock:
@@ -105,7 +171,9 @@ def observe_due(*, visible=False, observed_only=False, priority_project=None):
         except BlockingIOError:
             return 0
         observed_local = []
-        candidates = due_services(visible, observed_only, priority_project, engine.timestamp(), observed_local)
+        docker_ids = set()
+        candidates = due_services(visible, observed_only, priority_project, engine.timestamp(),
+                                  observed_local, docker_ids)
         if not candidates:
             return 0
         started = engine.timestamp()
@@ -113,10 +181,29 @@ def observe_due(*, visible=False, observed_only=False, priority_project=None):
         process_context = local_probe_context(observed_local)
         checked = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as workers:
+            versions = {}
+            if docker_ids:
+                with engine.read_context():
+                    for sid, token, _ in candidates:
+                        if sid not in docker_ids:
+                            continue
+                        try:
+                            version = engine.observation_version(sid, True, token, started=started)
+                        except ValueError:
+                            if engine.query('SELECT id FROM services WHERE id=?', [sid], True):
+                                raise
+                            continue
+                        if version is not None and version[0]['kind'] in ('container', 'compose'):
+                            versions[sid] = version
+            docker_results = probe_docker_batch(workers, versions) if versions else {}
             pending = {workers.submit(engine.prepare_observation, sid, True, token, background=True,
                                       managed_identities=identities, started=started,
                                       process_context=process_context): sid
-                       for sid, token, _ in candidates}
+                       for sid, token, _ in candidates if sid not in docker_ids}
+            for sid, version in versions.items():
+                future = workers.submit(engine.prepare_version, version, background=True,
+                                        docker_result=docker_results[sid])
+                pending[future] = sid
             for future in concurrent.futures.as_completed(pending):
                 sid = pending[future]
                 try:

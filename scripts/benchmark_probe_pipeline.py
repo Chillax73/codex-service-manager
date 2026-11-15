@@ -26,6 +26,7 @@ sys.path.insert(0, str(BASE / 'backend'))
 import capture
 import engine
 from benchmark_capture_candidates import cli, heartbeat, seed, usage
+from benchmark_docker_load import DockerLoad, HISTORY_COUNT
 from benchmark_snapshot_reader import DRIVER, build, records, timebase
 
 # Keep the requested native mode stable. The original one-shot driver could
@@ -48,7 +49,7 @@ def protect_benchmark_mode(source):
             'window.title = "P4-03 CPU Test / " + (Bundle.main.bundleIdentifier ?? "fixture")')
 
 TRACE = '''
-import collections,json,os,sys,threading,time
+import collections,json,os,sqlite3,sys,threading,time
 path=os.environ.get('CSM_PROBE_TRACE')
 if path:
     counts=collections.Counter()
@@ -56,8 +57,30 @@ if path:
     def audit(event,args):
         with lock:
             if event=='sqlite3.connect': counts['sqlite_connect']+=1
-            elif event=='subprocess.Popen': counts[os.path.basename(os.fsdecode(args[0]))]+=1
+            elif event=='subprocess.Popen':
+                exe=os.path.basename(os.fsdecode(args[0]))
+                counts[exe]+=1
+                if exe=='docker' and len(args[1])>1:
+                    command=args[1][1]
+                    if command=='compose':
+                        command='compose ps' if 'ps' in args[1] else 'compose other'
+                    if command in ('inspect','compose ps','compose other','ps'):
+                        counts['docker '+command]+=1
     sys.addaudithook(audit)
+    original_connect=sqlite3.connect
+    class TrackedConnection(sqlite3.Connection):
+        def execute(self, sql, /, *args):
+            result=super().execute(sql, *args)
+            if sql.startswith('UPDATE runs '):
+                with lock: counts['runs_update']+=max(0,result.rowcount)
+            elif sql.startswith('INSERT INTO service_observations('):
+                with lock: counts['observation_write']+=max(0,result.rowcount)
+            return result
+    def connect(*args,**kwargs):
+        if len(args)<6:
+            kwargs.setdefault('factory',TrackedConnection)
+        return original_connect(*args,**kwargs)
+    sqlite3.connect=connect
     def report():
         while True:
             with lock: snapshot=dict(counts)
@@ -209,7 +232,7 @@ def audit_counts(path, pids):
     return result
 
 
-def measure(pids, seconds, trace, root, mode):
+def measure(pids, seconds, trace, root, mode, expected_rows=None):
     scale = timebase(); factor = scale['numer'] / scale['denom'] / 1e7
     samples = []; remaining = seconds
     before_counts = audit_counts(trace, pids); wall = time.time()
@@ -234,7 +257,8 @@ def measure(pids, seconds, trace, root, mode):
     counts = {role: {key: value - before_counts[role].get(key, 0) for key, value in data.items()}
               for role, data in after_counts.items()}
     refreshes = [r for r in records(root) if r['at'] >= wall]
-    invalid = [r for r in refreshes if r['unavailable'] or r['visible'] != mode.startswith('window')]
+    invalid = [r for r in refreshes if (r['unavailable'] or r['visible'] != mode.startswith('window')
+                                        or (expected_rows is not None and r['responseRows'] != expected_rows))]
     if not refreshes or invalid:
         (root / (mode + '-rejected.json')).write_text(json.dumps(
             {'start': wall, 'end': time.time(), 'samples': samples, 'invalid_refreshes': invalid}, indent=2))
@@ -243,19 +267,30 @@ def measure(pids, seconds, trace, root, mode):
     means = {name: {key: sum(s['processes'][name][key] * s['seconds'] for s in samples) / duration
                     for key in ('own_cpu', 'child_cpu', 'rss_mib', 'footprint_mib')} for name in pids}
     return {'seconds': duration, 'samples': samples, 'means': means, 'counts': counts,
-            'refreshes': len(refreshes), 'refresh_ms': statistics.median(r['ms'] for r in refreshes)}
+             'refreshes': len(refreshes), 'refresh_ms': statistics.median(r['ms'] for r in refreshes),
+            'response_bytes': statistics.median(r['wireBytes'] for r in refreshes)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline-backend', type=Path, required=True)
+    parser.add_argument('--candidate-backend', type=Path, default=BASE / 'backend',
+                        help='use the baseline here too for a baseline/baseline smoke run')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seconds', type=int, default=120)
     parser.add_argument('--rounds', type=int, default=3)
-    parser.add_argument('--count', type=int, default=1000)
+    parser.add_argument('--count', type=int, help='total history including Docker records (default 1035 in Docker mode)')
+    parser.add_argument('--workload', choices=('http', 'docker'), default='http')
+    parser.add_argument('--stagger', action='store_true', help='stagger Docker history timestamps')
     parser.add_argument('--components-only', action='store_true')
     parser.add_argument('--resume', action='store_true', help='resume completed rounds after verifying test cleanup and source hashes')
     args = parser.parse_args()
+    if args.count is None:
+        args.count = 1035 if args.workload == 'docker' else 1000
+    if args.workload == 'docker' and (args.count < HISTORY_COUNT or args.resume):
+        parser.error('Docker mode requires at least 53 records and fresh output')
+    if args.seconds < 10 or args.rounds < 1:
+        parser.error('require at least ten seconds per scenario and one pair')
     out = args.output.resolve(); out.relative_to((BASE / '.test-state').resolve())
     out.mkdir(exist_ok=args.resume)
     if args.components_only:
@@ -265,7 +300,7 @@ def main():
     lock = (control / 'watcher.lock').open('a'); fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     trace_dir = out / 'trace'; trace_dir.mkdir(exist_ok=args.resume); (trace_dir / 'sitecustomize.py').write_text(TRACE)
     apps = {}
-    for variant, backend in [('before', args.baseline_backend.resolve()), ('after', BASE / 'backend')]:
+    for variant, backend in [('before', args.baseline_backend.resolve()), ('after', args.candidate_backend.resolve())]:
         executable = (out / variant / 'CSM P0 Benchmark.app/Contents/MacOS/ServiceManager' if args.resume else
                       build(out / variant, BASE / 'app/Sources/Infrastructure.swift', driver=MODE_DRIVER,
                             manager_transform=protect_benchmark_mode))
@@ -279,6 +314,9 @@ def main():
             subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(executable.parents[2])], check=True)
         apps[variant] = (executable, bundled)
     report = {'count': args.count, 'seconds_per_scenario': args.seconds, 'rounds': [],
+              'workload': args.workload, 'stagger': args.stagger,
+              'native_sha256': {v: hashlib.sha256(executable.read_bytes()).hexdigest()
+                                for v, (executable, _) in apps.items()},
               'source_sha256': {v: {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in b.glob('*.py')}
                                 for v, (_, b) in apps.items()}}
     if args.resume:
@@ -289,11 +327,29 @@ def main():
         report.setdefault('resumes', []).append({'at': time.time(), 'cleanup_anomalies': verify_test_cleanup(control)})
     (out / 'results.json').write_text(json.dumps(report, indent=2))
     order = [v for n in range(args.rounds) for v in (('before', 'after') if n % 2 == 0 else ('after', 'before'))]
+    load = DockerLoad(out) if args.workload == 'docker' else None
+    try:
+        if load:
+            report['docker_fixture'] = load.prepare()
+        run_rounds(args, out, control, apps, report, order, load, trace_dir)
+    finally:
+        lock.close()
+        if load:
+            load.close()
+
+
+def run_rounds(args, out, control, apps, report, order, load, trace_dir):
     for number, variant in enumerate(order):
         if number < len(report['rounds']):
             assert report['rounds'][number]['variant'] == variant
             continue
-        root = out / f'round-{number}-{variant}'; root.mkdir(); seed(root, args.count)
+        root = out / f'round-{number}-{variant}'; root.mkdir()
+        history_count = args.count - HISTORY_COUNT if load else args.count
+        seed(root, history_count)
+        if load:
+            load.settle_terminal_history(root)
+            seeded_at = time.time()
+            load.seed(root, seeded_at, stagger=args.stagger)
         root_lock = (root / 'watcher.lock').open('a'); fcntl.flock(root_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         (root / 'refresh.jsonl').touch(); trace = root / 'audit.jsonl'
         executable, backend = apps[variant]; owned = []; fixtures = []; gui_id = 'gui-' + str(number)
@@ -317,32 +373,60 @@ def main():
             assert len(workers) == 1
             pids = {'gui': gui_pid, 'collector': collector_pid, 'worker': workers[0]}
             (out / 'active.json').write_text(json.dumps({'root': str(root), 'variant': variant, 'pids': pids}))
-            for mode, active in [('window-idle', 0), ('menu-idle', 0), ('window-one', 1), ('menu-three', 3)]:
-                while len(fixtures) < active:
+            if load:
+                wait_for(lambda: load.historical_ready(root, seeded_at), 50)
+            scenarios = [('window-idle', 0), ('menu-idle', 0)] + (
+                [('window-active', 1), ('menu-active', 1)] if load else [('window-one', 1), ('menu-three', 3)])
+            for mode, active in scenarios:
+                if load and active and not fixtures:
+                    load.activate()
+                    load.seed(root, time.time(), active=True)
+                    fixtures.append({'kind': 'docker'})
+                    wait_for(lambda: load.verify_active(root, True), 40)
+                while not load and len(fixtures) < active:
                     fixtures.append(add_fixture(control, root, len(fixtures), owned))
                 (root / 'bench-mode').write_text(mode.split('-')[0]); requested = time.time()
                 wait_for(lambda: any(r['at'] > requested and r['visible'] == mode.startswith('window') for r in records(root)))
                 time.sleep(5)
                 print(json.dumps({'round': number, 'variant': variant, 'begin': mode}), flush=True)
-                row['scenarios'][mode] = measure(pids, args.seconds, trace, root, mode)
+                expected_count = args.count + (len(load.active_specs) if load and active else 0)
+                expected_rows = (expected_count if mode.startswith('window') else min(16, expected_count)) if load else None
+                sample = measure(pids, args.seconds, trace, root, mode, expected_rows)
+                row['scenarios'][mode] = sample
+                if load and args.seconds >= 60:
+                    if not any(sample['counts'][role].get('docker inspect',0) > 0 for role in ('worker','collector')):
+                        raise AssertionError('no Docker inspect commands recorded in ' + mode)
                 engine.ROOT = root
-                assert engine.query("SELECT count(*) AS n FROM services WHERE id LIKE 'history-%'", one=True)['n'] == args.count
-                for fixture in fixtures:
-                    assert engine.latest(fixture['observed'])['state'] == 'running'
+                if load:
+                    assert engine.query('SELECT COUNT(*) AS n FROM services', one=True)['n'] == expected_count
+                    if active:
+                        assert load.verify_active(root, True)
+                else:
+                    assert engine.query("SELECT count(*) AS n FROM services WHERE id LIKE 'history-%'", one=True)['n'] == history_count
+                    for fixture in fixtures:
+                        assert engine.latest(fixture['observed'])['state'] == 'running'
                 status = heartbeat(root); assert status['error'] is None and time.time() - status['updated'] < 15
                 (out / f'round-{number}.json').write_text(json.dumps(row, indent=2))
             # Real fixture exit must become visible through normal observation.
             (root / 'bench-mode').write_text('window')
-            for fixture in fixtures:
-                start = time.monotonic(); cli(control, 'stop', fixture['id']); owned.remove(fixture['id'])
-                wait_for(lambda: engine.latest(fixture['observed'])['ended'] is not None, 20)
-                fixture['exit_observed_ms'] = (time.monotonic() - start) * 1000
+            if load:
+                assert any(s['counts']['worker'].get('docker inspect',0) > 0 for s in row['scenarios'].values())
+                load.deactivate()
+                start = time.monotonic()
+                wait_for(lambda: load.verify_active(root, False), 30)
+                row['docker_exit_observed_ms'] = (time.monotonic() - start) * 1000
+            else:
+                for fixture in fixtures:
+                    start = time.monotonic(); cli(control, 'stop', fixture['id']); owned.remove(fixture['id'])
+                    wait_for(lambda: engine.latest(fixture['observed'])['ended'] is not None, 20)
+                    fixture['exit_observed_ms'] = (time.monotonic() - start) * 1000
             report['rounds'].append(row)
             (out / 'results.json').write_text(json.dumps(report, indent=2))
             print(json.dumps({'completed_round': number, 'variant': variant}), flush=True)
         finally:
             (root / 'quit').touch()
             cleanup_errors = []
+            quit_started = time.monotonic()
             # Allow native termination and supervisor reaping to finish before
             # issuing a csm stop. Do not race two shutdown paths.
             if gui_id in owned:
@@ -356,10 +440,13 @@ def main():
                 except Exception as exc:
                     cleanup_errors.append({'id': sid, 'error_type': type(exc).__name__})
             root_lock.close()
+            row['native_shutdown_ms'] = (time.monotonic() - quit_started) * 1000
+            (out / f'round-{number}.json').write_text(json.dumps(row, indent=2))
+            if report['rounds'] and report['rounds'][-1] is row:
+                (out / 'results.json').write_text(json.dumps(report, indent=2))
             if cleanup_errors:
                 (root / 'cleanup-errors.json').write_text(json.dumps(cleanup_errors))
                 raise RuntimeError('test cleanup incomplete; see isolated cleanup-errors.json')
-    lock.close()
 
 
 if __name__ == '__main__':

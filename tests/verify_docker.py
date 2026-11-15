@@ -34,7 +34,14 @@ def http_url(cid):
 
 
 def snapshot_external():
-    return {cid:engine.container_inspect(cid)['State'] for cid in engine.docker('ps','-aq').splitlines()}
+    ids=engine.docker('ps','-aq','--no-trunc').splitlines()
+    if not ids:
+        return {}
+    # A health check appends its own logs without any lifecycle action. Compare
+    # identity, status, birth and restart count; don't read unrelated diagnostics.
+    fields='[{{json .Id}},{{json .State.Status}},{{json .State.StartedAt}},{{json .RestartCount}}]'
+    rows=[json.loads(line) for line in engine.docker('inspect','--type=container','--format',fields,*ids).splitlines()]
+    return {cid:(status,started,restarts) for cid,status,started,restarts in rows}
 
 
 before=snapshot_external()
@@ -117,11 +124,18 @@ finally:
         alternate.unlink(missing_ok=True)
     if group:
         try:
-            member=engine.service(engine.query('SELECT id FROM services WHERE group_id=?',[group],True)['id'])
-            engine.compose_command(member,'down','--timeout','3')
+            members=[engine.service(row['id']) for row in engine.query('SELECT id FROM services WHERE group_id=?',[group])]
+            for member in members:
+                if member['spec']['compose_project']!=TAG+'-group':
+                    raise RuntimeError('测试 Compose 项目标识不符')
+                engine.containers_for(member)  # Recheck test file, working directory and native member labels.
+            engine.compose_command(members[0],'down','--timeout','3')
         except Exception as exc:errors.append(str(exc))
     if container:
-        try:engine.docker('rm','-f',container)
+        try:
+            label=engine.docker('inspect','--type=container','--format','{{index .Config.Labels "csm.test"}}',container)
+            if label!=TAG: raise RuntimeError('测试容器标签不符')
+            engine.docker('rm','-f',container)
         except Exception as exc:errors.append(str(exc))
     if volume:
         try:

@@ -113,7 +113,7 @@ worker 约 66% 的 CPU 来自子进程。采样末尾可读取的四个核心传
 
 内部结果概念字段为 `service_version/run_version/policy_token`、`started/checked_at`、`objects_by_id`、`errors_by_id` 和 `members_to_ids`。不成为公共 RPC 或落盘格式。完成时复核完整服务/最新运行内容及项目创建/策略代际，并沿用 started 与较新缓存时间比较；不能只比较 config_revision。
 
-执行顺序：捕获本批候选版本 → 不持有数据库事务地按等价调用配置分组 → Compose 成员发现 → 合并 inspect → 按服务组装结果 → 最终复核和持久化。独立组的超时不抹除其他已完成结果。各组从实际开始探测计 4 秒单调时钟预算，发现、inspect 与必要补查共享余量，不能每条命令重置 4 秒；多个组仍受现有 6 个执行槽约束。
+执行顺序：捕获本批候选版本 → 不持有数据库事务地按等价调用配置分组 → Compose 成员发现 → 合并 inspect → 按服务组装结果 → 最终复核和持久化。独立组的超时不抹除其他已完成结果。同批外部读操作共享 4 秒单调时钟预算；Compose 发现阶段最多使用前 2.5 秒，为健康组的 inspect 和必要清单补查预留时间。所有查询共享同一个时钟截止点，最多 6 个执行槽，不因排队或补查重置。该分段使超时的 Compose 发现不能耗尽其他组的 inspect 预算；极慢或排队过久的发现保持 unknown，按现有节奏重试。
 
 分组必须保持现有调用语义：`containers_for` 的 Compose ps 使用 runtime_env(spec)/cwd，而随后 inspect 当前使用 docker 默认调用环境，不能借优化擅自给 inspect 改用 Compose 环境。只有可证明执行上下文等价的请求才合并，显式 env/env_unset 差异保守分组；环境内容仅按现有命令调用传递，不写诊断、缓存键日志或响应。无法证明等价时分组隔离，不声称仍能合成一次命令。
 

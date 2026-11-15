@@ -95,8 +95,8 @@ class SnapshotCacheTest(unittest.TestCase):
             self.assertEqual(observation.observe_due(visible=True), observation.BATCH_SIZE)
             self.assertEqual(observation.observe_due(visible=True), 15 - observation.BATCH_SIZE)
             self.assertEqual(observation.observe_due(visible=True), 0)
-            self.register('docker', kind='container')
-            with patch.object(engine, 'containers_for', side_effect=RuntimeError('offline')) as inspect:
+            self.register('docker', kind='container', container_id='d' * 64)
+            with patch.object(engine, 'docker_probe_output', side_effect=OSError('offline')) as inspect:
                 self.assertEqual(observation.observe_due(visible=True), 1)
                 inspect.assert_called_once()
         with patch.object(engine, 'timestamp', return_value=1008):

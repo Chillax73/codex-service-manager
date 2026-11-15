@@ -149,3 +149,19 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot.py --count
 入口在 .test-state 下创建唯一状态目录，启动真实受监督的休眠任务；不监听端口、不启动 watcher/collector、不访问正式数据库。需要正常进程权限，保留已启用的采集检查点。退出时仅按已确认身份停止测试任务；清理失败保留原路径，便于正常恢复。请在其他测试结束后运行以减少负载干扰。
 
 每个数量场景分别测量引擎 snapshot、Python CPU、快照查询子进程 CPU/次数，以及真实一次性 JSON RPC 的端到端耗时。另列 instrumentation 进程总耗时以区分测量包装开销。CPU 不含常驻监督器/采集器的后台总消耗，纯任务基线也不覆盖健康 URL、容器、未知身份或复杂观察树。原始 JSON 仅留本机；脱敏摘要见 [修复验收](results/REVIEW_HARDENING.md)。
+
+## P4-04～06 · Docker 混合负载
+
+从相邻基线提交导出后端到隔离状态目录，并构建当前源码。P4-04 以 `c5f10cd` 为基线：
+
+```sh
+mkdir -p .test-state/p4-04/baseline
+git archive c5f10cd backend | tar -x -C .test-state/p4-04/baseline
+./scripts/build.sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/v01_docker_batch.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_probe_pipeline.py --workload docker --count 1035 --baseline-backend .test-state/p4-04/baseline/backend --output .test-state/p4-04/matrix --seconds 120 --rounds 3
+```
+
+Docker 模式需要 macOS 活跃桌面、本机 Docker/Compose、已缓存 `python:3.12-slim` 和本机进程权限。输出目录必须尚不存在。默认 1,035 条历史包含 40 个本轮创建后删除的容器、8 个真实退出容器和 2 个 Compose 项目的 5 个成员。活动负载包含一个普通容器及一个两副本的 Compose 成员。两版使用同批次夹具，三组 AB/BA/AB，每轮窗口/菜单各测无活动和有活动。可指定 `--stagger` 复验错峰，或用 `--rounds 1 --seconds 12` 检查实际窗口、菜单、计数和清理入口；短冒烟不可作为优化验收。
+
+审计只保存计数，输出保留各段自身与子进程 CPU、驻留内存、实际写入、SQLite 连接及运行/观察写入、Docker 子命令、刷新耗时与响应大小。样本的应用与采集器通过测试注册表管理；测试 Docker 资源用唯一标签自检，清理不使用全局 prune，也不停止正式服务。
