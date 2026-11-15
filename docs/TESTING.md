@@ -165,3 +165,8 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_probe_pipeline.py -
 Docker 模式需要 macOS 活跃桌面、本机 Docker/Compose、已缓存 `python:3.12-slim` 和本机进程权限。输出目录必须尚不存在。默认 1,035 条历史包含 40 个本轮创建后删除的容器、8 个真实退出容器和 2 个 Compose 项目的 5 个成员。活动负载包含一个普通容器及一个两副本的 Compose 成员。两版使用同批次夹具，三组 AB/BA/AB，每轮窗口/菜单各测无活动和有活动。可指定 `--stagger` 复验错峰，或用 `--rounds 1 --seconds 12` 检查实际窗口、菜单、计数和清理入口；短冒烟不可作为优化验收。
 
 审计只保存计数，输出保留各段自身与子进程 CPU、驻留内存、实际写入、SQLite 连接及运行/观察写入、Docker 子命令、刷新耗时与响应大小。样本的应用与采集器通过测试注册表管理；测试 Docker 资源用唯一标签自检，清理不使用全局 prune，也不停止正式服务。
+
+## CI 夹具入口锁争用
+
+`PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_fixture_mutation.py`
+使用独立进程锁重现入口争用：原 dispatch 立即返回 busy，夹具入口等待释放后只执行一次；持续占锁、入口后的 busy 和其他异常仍失败，不重试操作。之后运行 `tests/test_capture.py --suite core`。这不证明 CI 当时具体锁持有者，也不把 macOS 15 的通过当作 macOS 26 验收。

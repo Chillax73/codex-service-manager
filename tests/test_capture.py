@@ -22,7 +22,7 @@ sys.path.insert(0, str(BASE / 'backend'))
 import capture
 import engine
 import adoption
-from support import prepare_workspace, stop_test_watcher, tool
+from support import dispatch_fixture, prepare_workspace, stop_test_watcher, tool
 
 
 def free_port():
@@ -332,7 +332,7 @@ class CaptureAcceptance(unittest.TestCase):
 
     def test_14_single_launcher_and_children_stop_without_other_project(self):
         port, other_port = free_port(), free_port()
-        other = engine.dispatch({'action': 'launch', 'name': 'unrelated-project', 'cwd': str(self.b),
+        other = dispatch_fixture({'action': 'launch', 'name': 'unrelated-project', 'cwd': str(self.b),
                                  'argv': ['/usr/bin/python3', '-m', 'http.server', str(other_port)], 'ports': [other_port]})
         fixture = self.a / 'launcher.py'
         fixture.write_text('import subprocess,time,sys\n'
