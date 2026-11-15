@@ -3,8 +3,27 @@
   "desktop_snapshot_transport": {
     "mode": "snapshot-worker",
     "framing": "newline-delimited JSON over the app-owned child process stdin and stdout",
-    "request": {"action": "snapshot_cached", "visible": true, "priority_project": "optional-project-id-or-all"},
-    "result": "read-only service snapshot with per-service cache_state and observation_available"
+    "request": {
+      "action": "snapshot_cached",
+      "visible": true,
+      "priority_project": "project-id-or-all",
+      "snapshot_format": "list-v1"
+    },
+    "optional_request_fields": ["priority_project", "snapshot_format"],
+    "result": "Read-only snapshot with per-service cache_state and top-level observation_available",
+    "formats": {
+      "full": "Default when snapshot_format is omitted. Returns the legacy full result without a snapshot_format field.",
+      "list-v1": "Returns service summaries with detail_revision and aggregate summary fields for all services.",
+      "menu-v1": "Returns up to 16 service summaries in existing order, projects associated with those services and aggregates over all services."
+    }
+  },
+  "service_details": {
+    "request": {"action": "service_details", "id": "service-id"},
+    "result": {
+      "service": "Current cached projection with detail_revision matching the same service revision in a summary",
+      "operations": "Up to 100 operations for the requested service, ordered newest first"
+    },
+    "error": "The ID is missing, invalid or no longer registered"
   },
   "response": {
     "ok": true,
@@ -232,6 +251,8 @@
     "service.automatic_end": "boolean; false until original observed service starts through manager",
     "service.observation_paused": "boolean; the owning project's automatic scan is paused",
     "service.last_checked_at": "Unix seconds of the last recorded actual check, or null",
+    "service.cache_state": "recent | expired | pending | paused on cached snapshots",
+    "service.detail_revision": "Opaque service content revision in summary entries and service_details",
     "service.state_fresh": "boolean; this response contains a fresh probe rather than a cached projection",
     "service.configuration": "effective settings for the next launch, with environment keys only",
     "service.has_pending_configuration": "boolean; launch or health changes are waiting for a successful start",

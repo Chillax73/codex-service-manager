@@ -1,6 +1,15 @@
 # 验收证据索引
 
-当前分支的项目扫描、配置、排序和菜单复验见 [体验优化验收](../../docs/results/UX_0_0_3.md)。后续采集调度与界面快照的回归和资源数据见 [空闲资源回归](../../docs/TESTING.md#空闲资源回归)。下列编号保留各轮原始验收范围。
+下列编号保留各轮原始验收范围。复验命令和环境见 [测试说明](../../docs/TESTING.md)，待办及实施进度见 [任务清单](tasks.md)。
+
+## 已完成变更归档
+
+| 变更 | 规格范围 | 历史任务与证据 |
+| --- | --- | --- |
+| 审查修复 | 主规格 RV01–RV04 范围 | [实施记录](../../docs/archive/2026-10-27-review-hardening/PLAN.md) · [验收报告](../../docs/results/REVIEW_HARDENING.md) |
+| 体验优化 | [项目观察](../../docs/specs/project-auto-observation/spec.md) · [服务配置](../../docs/specs/service-configuration/spec.md) · [服务排序](../../docs/specs/service-ordering/spec.md) · [工作区侧栏](../../docs/specs/workspace-sidebar/spec.md) | [提案](../../docs/archive/2026-11-08-improve-v0-0-3-experience/proposal.md) · [设计](../../docs/archive/2026-11-08-improve-v0-0-3-experience/design.md) · [任务](../../docs/archive/2026-11-08-improve-v0-0-3-experience/tasks.md) · [验收报告](../../docs/results/UX_0_0_3.md) |
+| 服务生命周期可靠性 | [生命周期](../../docs/specs/service-lifecycle/spec.md) · [容器自动登记去重](../../docs/specs/project-auto-observation/spec.md#requirement-obs-req-09--容器自动登记按已核验身份去重) · [配置恢复与清理](../../docs/specs/service-configuration/spec.md) | [提案](../../docs/archive/2026-11-08-harden-service-lifecycle/proposal.md) · [设计](../../docs/archive/2026-11-08-harden-service-lifecycle/design.md) · [任务](../../docs/archive/2026-11-08-harden-service-lifecycle/tasks.md) · [验收报告](../../docs/results/SERVICE_LIFECYCLE.md) |
+| 快照与探测解耦 | [项目观察](../../docs/specs/project-auto-observation/spec.md) | [提案](../../docs/archive/2026-11-08-decouple-snapshot-probing/proposal.md) · [设计](../../docs/archive/2026-11-08-decouple-snapshot-probing/design.md) · [任务](../../docs/archive/2026-11-08-decouple-snapshot-probing/tasks.md) · [验收报告](../../docs/results/SNAPSHOT_PROBING.md) |
 
 ## RV01–RV04 · 审查修复（2026-10-27）
 
@@ -146,7 +155,7 @@ P4-01–03 待验收：候选集合/控制语义等价，千条零候选连接 O
 
 ## P4-D2 · 后台观察诊断文档里程碑
 
-已取得正式 60 秒 CPU、只读重放、缓存更新和原生栈证据：worker 合计 28.08%，其中子进程 18.55%；主要来源为历史 Docker/Compose 逐条查询。已区分采集开关与历史观察策略，后续任务、错误边界及 W-01～W-04 验收定义见 [诊断与方案](../../docs/results/WORKER_P4_04_DESIGN.md)。自身 CPU 精确分账仍有量化限制，不能把频率模型或内存夹具视作生产优化收益。
+已取得正式 60 秒 CPU、只读重放、缓存更新和原生栈证据：worker 合计 28.08%，其中子进程 18.55%；主要来源为历史 Docker/Compose 逐条查询。实测范围见 [诊断记录](../../docs/results/WORKER_P4_04_DESIGN.md)，W-01～W-04 见 [验收定义](worker-observation-design.md#验收定义)。自身 CPU 精确分账仍有量化限制，不能把频率模型或内存夹具视作生产优化收益。
 
 运行约束核验 PASS：61 个禁用目录、当前项目启用状态、hooks 文件及管理组件运行身份不变，采集心跳正常；业务控制操作为零，26 个容器状态/启动时间/重启计数不变。仅完成诊断文档，不修改源码或替换应用。P4-04～06 的实现回归及优化 CPU 对照均为 NOT_RUN；本轮检查文档一致性、引用路径、差异格式及发布隐私，不要求尚未开始的实现验收通过。
 

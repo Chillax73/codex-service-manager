@@ -22,7 +22,7 @@
 - 项目结束：每个项目独立选择手动结束、退出 Codex、两者或持续运行；服务可设置保留例外。
 - 原生界面：主窗口、系统菜单栏、详情、日志、历史、配置、发现与观察器恢复。
 
-## 审查修复（未发布）
+## 审查修复（2026-10-27）
 
 核心采集回归加入 macOS CI；新增 shell 边界测试、按项目关闭后续采集、脱敏故障状态。存储/历史清理与 Swift 模型/状态/基础设施拆分，日志清理校验归属并保留最近运行。另提供快照性能基线、发布清单和版本一致性检查。范围与本机验证见 [修复验收](docs/results/REVIEW_HARDENING.md)；这不代表旧聊天热加载、无 hook 自动归属或公证分发已完成。
 
@@ -67,12 +67,12 @@ open "build/Codex Service Manager.app"
 在当前克隆的根目录初始化本机项目指令：
 
 ```sh
-# 已有 AGENTS.md 时保留原文件。
+# 在本仓库首次采用开发指令模板时执行。保留已有 AGENTS.md。
 [ -f AGENTS.md ] || cp AGENTS.example.md AGENTS.md
 /usr/bin/python3 scripts/integrate.py "$PWD"
 ```
 
-接入其他项目，把最后一个参数改为该项目目录。在 Codex 中重新打开目标项目并开始新会话，确保加载更新的 AGENTS.md；然后让 Codex“按照本项目 AGENTS.md 启动前端/后端服务并登记到服务管理器”。安装器保留原指令、保存首次备份，并写入当前克隆路径的配套入口；生成的本机指令不提交 Git。
+接入其他项目时，运行第二条命令并将最后一个参数替换为目标项目目录。在 Codex 中重新打开目标项目并开始新会话，确保加载更新的 AGENTS.md；然后让 Codex“按照本项目 AGENTS.md 启动前端/后端服务并登记到服务管理器”。安装器保留原指令、保存首次备份，并写入当前克隆路径的配套入口。生成的本机指令仅留本机。
 
 ```sh
 # 以下命令在目标项目目录执行；把入口路径替换为当前克隆的路径。
@@ -208,8 +208,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
 
 ## 项目文档
 
-- [需求文档](docs/PROJECT_REQUIREMENTS.md)
-- [Coding spec](specs/001-service-manager/spec.md)、[实现设计](specs/001-service-manager/plan.md)、[数据模型](specs/001-service-manager/data-model.md)
-- [实施任务](specs/001-service-manager/tasks.md)、[实施报告](docs/IMPLEMENTATION_REPORT.md)、[自动观察验收与限制](docs/results/GLOBAL_CAPTURE.md)
-- [状态颜色、筛选与项目汇总验收](docs/results/STATUS_DISPLAY.md)
-- [第一轮原型记录](validation/ROUND1_REPORT.md)（独立于产品验收）
+- [开发文档入口与 self 流程](CONTRIBUTING.md#开发文档)
+- [产品需求](docs/PROJECT_REQUIREMENTS.md)、[主规格与分项规格](specs/001-service-manager/spec.md)、[设计](specs/001-service-manager/design.md)
+- [实施计划](specs/001-service-manager/plan.md)、[任务清单](specs/001-service-manager/tasks.md)、[验收证据索引](specs/001-service-manager/acceptance.md)
+- [早期实施报告](docs/IMPLEMENTATION_REPORT.md)、[第一轮原型记录](validation/ROUND1_REPORT.md)

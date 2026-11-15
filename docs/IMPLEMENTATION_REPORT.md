@@ -1,6 +1,6 @@
 # 实施与验证报告
 
-本文保留截至 2026-10-27 的实施和验收记录。当前分支的项目扫描、配置、菜单与状态筛选见 [体验优化验收](results/UX_0_0_3.md)，最新采集和界面轮询的测量见 [空闲资源回归](TESTING.md#空闲资源回归)。
+本文保留截至 2026-10-27 的实施和验收记录。后续轮次的结果与覆盖范围见 [验收证据索引](../specs/001-service-manager/acceptance.md)。
 
 原版 2026-10-12 配套完整控制已完成本机 A-01 至 A-16 验收。此后增加项目管理、用户级自动观察、普通启动按能力接管，以及状态颜色、筛选和项目汇总。新聊天常见路径已部署，任意聊天目标仍有旧聊天加载与发现兜底缺口。
 
@@ -10,7 +10,7 @@
 
 ## 产物与实现
 
-build/Codex Service Manager.app：SwiftUI/AppKit 主窗口、系统菜单栏、独立 NSWorkspace 退出观察器。Python 标准库引擎使用 SQLite WAL，管理本机服务、后台任务、Docker/Compose、历史、操作结果、日志与项目策略。scripts/csm 提供项目配套入口，当前项目已接入；spec、plan、tasks、数据模型与接口契约位于 specs/001-service-manager/。
+build/Codex Service Manager.app：SwiftUI/AppKit 主窗口、系统菜单栏、独立 NSWorkspace 退出观察器。Python 标准库引擎使用 SQLite WAL，管理本机服务、后台任务、Docker/Compose、历史、操作结果、日志与项目策略。该轮验收通过 `scripts/csm` 接入项目。现行文档见 [开发文档入口](../CONTRIBUTING.md#开发文档)。
 
 本机服务由独立监督进程管理，核对出生身份和运行 token，脱离 Codex 工具及管理 UI 存活。停止失败禁止继续重启。本机停止超时需显式强制；容器使用 Docker 原生 5 秒 stop，保留容器和数据。
 

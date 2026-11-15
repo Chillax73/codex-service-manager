@@ -42,7 +42,7 @@
 /usr/bin/python3 /绝对路径/codex-service-manager/scripts/integrate.py /项目目录
 ```
 
-安装器保留原 AGENTS.md，加入带标记的段落，首次修改前备份；`--remove` 移除自己的段落。Codex 新会话加载项目指令后生效。本项目已接入。
+安装器保留目标目录原有的 `AGENTS.md`，加入带标记的段落，首次修改前备份。`--remove` 移除安装器添加的段落。每个克隆或 worktree 按自己的接入状态操作，Codex 新会话加载目标目录的项目指令后生效。本仓库的开发约定见 [贡献指南](../CONTRIBUTING.md#开发文档)。
 
 示例：
 
