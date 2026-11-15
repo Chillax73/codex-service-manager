@@ -56,11 +56,7 @@ open "build/Codex Service Manager.app"
 
 ### 另一个窗口启动后没有出现
 
-先区分“新窗口”与“新聊天”：安装前已打开的旧聊天可能没有加载新增 hooks。配置检查脚本启动的是独立短时 app-server，`trusted/enabled` 与采集器心跳正常都不能证明旧聊天实际触发了回调。
-
-当前可用路径是新建聊天验证真实采集，或通过下方配套入口获得完整控制；不要为了登记而重复启动已经运行的业务服务。管理器没有对启用前对象做后台补录，原生发现页也不是自动登记。检查实际 PID/出生身份、端口或 Docker 状态；聊天声称启动完成不能代替现场运行状态。详细步骤见 [排障说明](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
-
-普通启动的可靠停止、常见命令/显式配置重启已交付。“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、任意复杂包装自动拆分；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](docs/project/tasks.md)。
+先确认新窗口是否在继续旧聊天，以及服务是否仍在运行。按 [自动观察排障](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录) 检查配置、心跳和实际事件。旧聊天配置加载、后台发现兜底和复杂包装自动拆分见 [任务清单](docs/project/tasks.md)。
 
 ## 接入项目（完整控制）
 
@@ -121,29 +117,7 @@ open "build/Codex Service Manager.app"
 | 0.2.0 用户级 `backend/capture.py` hooks | 记录启动身份，独立采集服务；已完成一个新桌面聊天的真实工具回调和原生窗口验证。 |
 | `validation/` 中的 Codex hooks | 可选的早期实验，仅记录生命周期/工具事件元数据，未接入正式服务自动登记或启停。 |
 
-完整控制按上面的“接入项目”使用；无需逐项目配置的自动观察使用新的用户级采集 hooks，适用当前已验证路径。下面的 `validation/` hooks 仍只是早期事件实验，不是新的采集组件。`SessionEnd` 也可能由归档、删除会话或闲置触发，不能作为应用退出的唯一判断。[OpenAI Hooks 官方说明](https://learn.chatgpt.com/docs/hooks#sessionend)
-
-如需复验 hooks，在本仓库克隆根目录进行：
-
-1. 阅读 `validation/install_hooks.py` 和 `validation/hook_recorder.py`，然后生成本机配置：
-
-   ```sh
-   /usr/bin/python3 validation/install_hooks.py
-   ```
-
-   生成 `.codex/hooks.json` 和 `validation/hooks.json`，配置五个事件：`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop`、`SessionEnd`。已有不同配置时安装器拒绝覆盖，请先处理冲突或使用独立克隆目录试验。
-
-2. 从此目录启动 `codex` CLI，按正常流程信任项目；在 CLI 内输入 `/hooks`，阅读并信任这些 hooks。安装脚本不授予信任；修改定义后需要重新审核。[官方审核说明](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)
-
-3. 可在另一个终端、同一仓库根目录探测配置：
-
-   ```sh
-   /usr/bin/python3 validation/verify_hooks.py --project-only
-   ```
-
-   它检查配置与信任元数据，不会调用模型，也不证明桌面工具事件已经触发。请核对 `/hooks` 中的本项目配置与启用状态，再让 Codex 执行指南中的无害标记命令，查看本机 `validation/.state/hook-events.jsonl` 的实际事件。
-
-事件文件包含项目路径和会话标识；仅留本机，勿提交 Git 或作为原始附件上传。关闭实验时先在 `/hooks` 禁用本工具条目，再仅移除本工具配置，保留其他 hooks。完整事件复验、路径/版本排障与移除步骤见 [Hooks 使用指南](docs/HOOKS.md)；[原型验证记录](validation/ROUND1_REPORT.md) 与正式产品验收分别保存。
+正式配置见 [Codex 桌面接入](docs/INTEGRATION.md)。早期项目级 hooks 的安装、审核、事件检查和移除见 [Hooks 事件实验](validation/HOOKS.md)，实测范围见 [原型验证记录](validation/ROUND1_REPORT.md)。
 
 ## 结束策略与边界
 
@@ -211,4 +185,4 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
 - [开发文档入口与 self 流程](CONTRIBUTING.md#开发文档)
 - [产品需求](docs/PROJECT_REQUIREMENTS.md)、[主规格与分项规格](docs/project/spec.md)、[设计](docs/project/design.md)
 - [实施计划](docs/project/plan.md)、[任务清单](docs/project/tasks.md)、[验收证据索引](docs/project/acceptance.md)
-- [早期实施报告](docs/IMPLEMENTATION_REPORT.md)、[第一轮原型记录](validation/ROUND1_REPORT.md)
+- [早期实施报告](docs/results/IMPLEMENTATION_REPORT.md)、[第一轮原型记录](validation/ROUND1_REPORT.md)

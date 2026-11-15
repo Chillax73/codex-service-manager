@@ -104,7 +104,7 @@ O07：[v0.1.0 开发者预览](https://github.com/Chillax73/codex-service-manage
 
 - [x] D01 README 与 hooks 使用指南：正式机制/可选实验职责，安装、审核、核验、数据与移除边界。
 
-D01：README 的“Codex Hooks 的作用与使用”、docs/HOOKS.md 与接入/原型文档已对应；命令/事件对照源码和文档链接检查通过。仅文档更新，未安装 hooks、修改信任或合成桌面事件。
+D01：README 的“Codex Hooks 的作用与使用”和当时的指南已关联接入与原型文档，命令、事件与文档链接检查通过。实验指南现见 [Hooks 事件实验](../../validation/HOOKS.md)。该轮仅更新文档，未安装 hooks、修改信任或合成桌面事件。
 
 ## 项目管理可用性
 

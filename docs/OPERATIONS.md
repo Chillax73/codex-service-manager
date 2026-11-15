@@ -27,8 +27,6 @@
 
 服务已在列表中但重启禁用时，先查看详情中的能力原因。可靠的观察进程可直接停止。缺少启动配置时，从服务行右键或详情菜单打开“编辑服务配置…”，补齐单项命令与必要环境。共享多服务启动器或未知子进程需先明确独立范围。停止失败只能在已确认范围内强制停止。更新采集代码后，可通过 `scripts/csm stop csm-auto-collector` 和 `scripts/csm capture-start` 重启内部采集组件。
 
-全局自动观察先运行 `scripts/check_capture_hooks.py` 核对两个 User config handler 的 trusted/enabled，再新建聊天验证实际启动。组件不可用时在管理设置点击“启动或恢复自动采集”。仅组件运行不代表既有聊天已重新加载 hooks。若自动审批拒绝新增的采集副作用，保留拒绝原因并正常取得明确授权，不通过移除前缀或绕过信任继续。
-
 | 现象 | 检查和处理 |
 |---|---|
 | 缺少 Swift/Python 或构建失败 | 执行 `xcode-select --install`，确认 `/usr/bin/python3 --version` 和 `swiftc --version`；运行 `scripts/doctor.py`。 |
@@ -47,18 +45,18 @@
 ## 另一个聊天或窗口启动服务却没有记录
 
 1. 核对实际状态。检查目标端口、PID/出生身份或指定容器状态；完成回复或旧 PID 文件不能证明服务仍在运行。已退出对象不能补录为运行中，也不要先重启来制造登记证据。
-2. 在目标项目目录运行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/check_capture_hooks.py /项目目录`，确认两个 User config handler 为 trusted/enabled。这个独立配置探测不会重载桌面或证明旧聊天接入。未信任或定义变化时，在正常 `/hooks` 中逐项审核。
-3. 查看“管理设置 → 服务自动采集”的心跳与错误，必要时使用恢复入口。组件正常但无新事件，继续检查该聊天是否在安装前已打开、工具是否经过 shell hooks；新窗口复用旧聊天仍可能漏记。
+2. 在目标项目目录运行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/check_capture_hooks.py /项目目录`，确认两个 User config handler 为 trusted/enabled。脚本通过独立短时 app-server 只读检查配置，不请求模型或重载桌面，也无法证明该聊天已触发回调。未信任或定义变化时，在正常 `/hooks` 中逐项审核。
+3. 查看“管理设置 → 服务自动采集”的心跳与错误，组件不可用时点击“启动或恢复自动采集”。组件正常但无新事件，继续检查该聊天是否在安装前已打开、工具是否经过 shell hooks；新窗口复用旧聊天仍可能漏记。
 4. 当前使用新聊天验证常见路径，或让后续需完整控制的服务通过 scripts/csm 登记。已经运行的进程不要重复启动；已有容器在身份和项目明确时用 `csm container` 登记，已有 Compose 要使用原项目名，不能创建副本。
 5. 首阶段没有无 hook 的后台自动登记兜底，也没有已验收的旧聊天配置热加载操作。复杂包装、脚本内部 Docker 和采样前完全脱离的进程可能漏记；原生发现列表的候选不能等同自动观察或接管。
 
 不要将退出/重启 Codex 作为无副作用的配置刷新：真正退出可能触发已管理项目的退出策略。自动观察不改变业务进程的存活方式，也不负责补回日志、退出码或启动配置。旧聊天加载、后台兜底与复杂脚本控制分别见 T16–T18，不通过修改信任状态文件或放宽审批实现。
 
+管理设置显示最近一次采集故障的阶段、异常类型和时间。Hook、采集器及容器观察的诊断只保存这些元数据。PreToolUse 接入失败会提示，业务命令仍走正常授权流程。arm 的错误输出被隔离，PostToolUse 发现 arm 未成功时记录 checkpoint 故障。回调缺失或运行时不可达时可能没有提示。排查本次采集时，结合实际事件、心跳及 [命令兼容范围](INTEGRATION.md#命令兼容范围)。若审批拒绝采集附加的本机写入，保留拒绝原因并按正常流程取得授权。
+
 ## 项目采集开关与历史保留
 
-选择具体项目，打开“管理设置 → 采集此目录中的 Codex 启动”；关闭后可继续显式登记，既有观察与服务继续保留。CLI 为 `scripts/csm capture-policy --cwd /path/to/project --enabled off`，恢复改为 `on`。按规范化 cwd 精确匹配，子目录和 worktree 独立；需使用更新后的采集代码，旧版已安装 handler 不会自动获得新策略。
-
-管理设置显示最近采集故障的阶段/异常类型，不保存异常正文；它是最近一次记录，不等于持续故障。PostToolUse 发现缺失 arm 时记录 checkpoint 故障，若回调本身缺失则不能保证提示。结合实际事件、心跳和 [Hook 边界说明](HOOKS.md#命令边界与项目级禁用) 排查，不能用心跳正常推断所有聊天已覆盖。
+选择具体项目，打开“管理设置 → 采集此目录中的 Codex 启动”。CLI 为 `scripts/csm capture-policy --cwd /path/to/project --enabled off`，恢复改为 `on`。策略按规范化 cwd 精确匹配，子目录和其他 worktree 各自配置。关闭后，后续 hooks 跳过采集器启动、插桩和事件登记。既有记录、已确认后代的观察和业务服务继续保留，其他 hooks 和配套登记入口仍可使用。旧版 handler 需更新至支持该策略的采集代码并重新审核。
 
 “清理旧历史”接受 1–36500 的整数天数，显式删除超过期限的已结束旧运行/操作记录与未被跟踪的过期采集事件；保留每项最近运行、活动运行和项目回收档案。仅删除本工具日志目录中与运行 ID 对应的普通日志，跳过外部路径和符号链接。默认不自动清理，不停止服务，不操作源码/容器/卷；也不保证 SQLite 空闲页或系统备份中的内容被安全擦除。
 
@@ -66,10 +64,10 @@
 
 ## 卸载与数据清理
 
-曾启用全局自动观察时，先在 `/hooks` 逐项禁用本工具两个 User config handler，执行 `/usr/bin/python3 scripts/install_global_capture.py --remove --instructions`，确认加载过旧配置的聊天不再执行本工具回调，并通过 `scripts/csm stop csm-auto-collector` 停止本工具的内部采集任务。不要停止仅观察的业务进程。此后再按下面步骤处理配套入口、观察器和数据。
+曾启用全局自动观察时，先在 `/hooks` 逐项禁用本工具两个 User config handler，再执行 `/usr/bin/python3 scripts/install_global_capture.py --remove --instructions`。核对加载过旧配置的聊天已停止执行本工具回调，单独修改文件不足以确认运行时已更新。用 `scripts/csm stop csm-auto-collector` 停止内部采集任务。单独移除自动观察时，业务进程、历史记录和项目配套指令继续保留。完整卸载再执行以下步骤。
 
 1. 在 UI/CLI 中逐项停止自己希望结束的服务；持续运行的服务和保留例外需明确决定。`end <projectID>`遵循项目开关，不保证停掉保留例外。不要用旧 PID 直接 kill。
-2. 在每个接入项目执行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/integrate.py /path/to/project --remove`。它只移除标记段落，保留其他指令；检查首次备份 AGENTS.md.csm-backup。原型 hooks 如曾安装，检查项目 .codex/hooks.json，将指向 validation/hook_recorder.py 的本工具条目逐项移除，保留其他 hooks；勿删除整个混合配置。
+2. 在每个接入项目执行 `/usr/bin/python3 /path/to/codex-service-manager/scripts/integrate.py /path/to/project --remove`。它只移除标记段落，保留其他指令。首次备份在 `AGENTS.md.csm-backup`。曾安装项目级实验 hooks 时，按 [实验移除步骤](../validation/HOOKS.md#禁用与移除) 清理。
 3. 在设置中查看状态目录。退出管理应用后独立退出观察器仍可能存活；用活动监视器检查 ServiceManager 的完整命令及 `--watch --root`，仅退出属于本工具、同一状态目录的观察器。不要按名称批量 kill，不要退出其他状态目录或项目的对象。
 4. 确认没有登记服务/观察器在使用数据后，备份需要保留的历史，再通过 Finder 删除 `~/Library/Application Support/Codex Service Manager/`（自定义 CSM_STATE_DIR 以实际配置为准）。删除数据库不会自动停止服务，不要边运行边删除。
 5. 删除本地 `.app` 与源码目录。容器、镜像和卷不会随卸载删除；仅在确认归属和数据已备份后用 Docker 的显式命令单独处理。

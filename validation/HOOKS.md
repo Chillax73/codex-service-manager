@@ -1,8 +1,6 @@
-# Codex Hooks 使用指南
+# 早期 Hooks 事件实验
 
-开发分支新增用户级服务自动观察 hooks，其安装、逐项审核、排障与移除见 [接入说明](INTEGRATION.md#任意本机聊天自动观察)，真实验证见 [自动观察报告](results/GLOBAL_CAPTURE.md)。它们使用 `backend/capture.py`，不需要每个项目安装事件实验。当前只验证已加载配置的新聊天常见路径；旧聊天加载缺口已复现，独立配置探测不重载桌面，新窗口也不等于新聊天，详见 [排障说明](OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
-
-本页以下内容仍只说明 `validation/` 下的早期事件实验。完整控制链路是项目 AGENTS.md 引导 Codex 调用 scripts/csm，原生观察器处理真正应用退出。安装这里的实验 hooks 不会自动登记或停止服务。
+实验使用项目级 hooks 记录会话和工具事件。正式的用户级采集与项目配套入口见 [Codex 桌面接入](../docs/INTEGRATION.md)。
 
 ## 准备与安装
 
@@ -47,9 +45,11 @@ CSM_POC_MARKER=readme python3 -c 'print("hook-probe")'
 | Stop | 记录收到的轮次停止事件，不停止服务。 |
 | SessionEnd | 记录收到的会话结束事件，不执行项目结束或 codex_exit。 |
 
-官方 SessionEnd 可发生于会话归档/删除、Codex 正常关闭或符合条件的闲置，不等于 Mac 应用最后一个实例终止。不要将它直接接到正式服务停止逻辑。[OpenAI SessionEnd 说明](https://learn.chatgpt.com/docs/hooks#sessionend)
+官方 SessionEnd 可发生于会话归档/删除、Codex 正常关闭或符合条件的闲置。原型记录中的原因值为 `other`。正式服务停止依赖独立原生观察器判断目标应用最后一个实例终止。[OpenAI SessionEnd 说明](https://learn.chatgpt.com/docs/hooks#sessionend)
 
-先前原型核验捕获过 CLI 的实际 SessionEnd，但没有确证当时桌面会话的 PreToolUse/PostToolUse；当前正式产品通过配套登记入口和原生退出观察器完成验收。这些覆盖范围见 [原型报告](../validation/ROUND1_REPORT.md) 与 [正式验收](results/VALIDATION.md)。本指南不声称此次已重新安装、审核或触发桌面 hooks。
+先前原型核验捕获过 CLI 的实际 SessionEnd，但没有确证当时桌面会话的 PreToolUse/PostToolUse；当前正式产品通过配套登记入口和原生退出观察器完成验收。这些覆盖范围见 [原型报告](ROUND1_REPORT.md) 与 [正式验收](../docs/results/VALIDATION.md)。本指南不声称此次已重新安装、审核或触发桌面 hooks。
+
+复验桌面事件时，核对 `PreToolUse` 和 `PostToolUse` 的 cwd 与 session_id。需要验证长驻命令时，使用专用测试服务，比较事件时间与 HTTP 就绪时间，检查工具完成事件是否延后及元数据能否建立关联。回复结束、切换聊天、关闭窗口、归档和真正退出应用分别观察。实验只记录事件，退出事件不触发测试或业务服务停止。
 
 ## 排障与隐私
 
@@ -69,19 +69,4 @@ CSM_POC_MARKER=readme python3 -c 'print("hook-probe")'
 1. 在 CLI `/hooks` 禁用本工具 handler，并对加载过配置的会话确认新配置已生效。
 2. 检查项目 `.codex/hooks.json`，仅移除命令指向本克隆 `validation/hook_recorder.py` 的条目，保留同一事件中的其他 handler。如果整个文件只有本工具配置，可移除该文件；不要删除共享 `.codex/` 或其他设置。
 3. 本机检查副本 `validation/hooks.json` 和实验事件 `validation/.state/hook-events.jsonl` 可在确认归属并备份需要的记录后删除。`.state/` 还可能含其他原型诊断，不要整目录清空。
-4. 移除 hooks 不会停止已登记服务，也不会移除正式 AGENTS.md 接入；这两件事分别按 [使用与卸载](OPERATIONS.md) 操作。
-
-## 命令边界与项目级禁用
-
-当前回归比较 Bash/zsh 原命令与插桩命令的 stdout、stderr、退出码，覆盖多行/heredoc、管道/pipefail、set -e、EXIT/TERM trap、显式 exit/exec 与超时终止。显式 exit/exec、errexit 和信号可能跳过末尾检查点；依赖 shell 初始状态、DEBUG trap、xtrace 或其他 Hook 改写顺序的任意命令仍需实测。不能据此承诺对所有 shell 程序透明。重复采集标记避免二次插入，原工具输入的其他字段保留。
-
-在原生应用选择具体项目，打开“管理设置 → 此项目自动采集”关闭；或运行：
-
-```sh
-/path/to/codex-service-manager/scripts/csm capture-policy --cwd /path/to/project --enabled off
-# 恢复：把 off 改为 on
-```
-
-策略按规范化 cwd 精确匹配；子目录和其他 worktree 独立，不自动递归。关闭后，后续 hook 不启动采集器、不插桩、不新增事件；既有记录及已确认后代的观察继续保留，不停止服务，也不撤销已启用的其他 hooks。可继续使用配套入口显式登记。此设置不会影响已安装的旧版 capture.py，升级后需正常更新并审核 handler 指向的代码。
-
-Hook/采集器/容器观察故障在管理设置显示阶段、异常类型和时间元数据，不记录异常正文。PreToolUse 接入失败仍返回提示并让业务工具走正常授权流程；arm 的错误输出被隔离，PostToolUse 若发现没有成功 arm 则记录 checkpoint 故障。缺失 PostToolUse 或运行时不可达时不能保证产生提示，心跳正常也不能证明本次命令已采集。
+4. 移除 hooks 不会停止已登记服务，也不会移除正式 AGENTS.md 接入；这两件事分别按 [使用与卸载](../docs/OPERATIONS.md) 操作。
