@@ -104,6 +104,33 @@ def database():
 _reads = threading.local()
 
 
+class ObservationStoreChanged(RuntimeError):
+    pass
+
+
+def observation_store():
+    root = ROOT
+    try:
+        return root, storage.database_identity(root)
+    except FileNotFoundError as exc:
+        raise ObservationStoreChanged('状态数据库已更换') from exc
+
+
+@contextlib.contextmanager
+def open_observation_database():
+    # Compare identities before and after opening: a pathname is not a file handle.
+    root = ROOT
+    try:
+        before = storage.database_identity(root)
+    except FileNotFoundError:
+        before = None
+    with contextlib.closing(database()) as db:
+        current = observation_store()
+        if current[0] != root or (before is not None and current[1] != before):
+            raise ObservationStoreChanged('状态数据库已更换')
+        yield current, db
+
+
 @contextlib.contextmanager
 def read_context():
     """Thread-owned connection; each SELECT finishes before external probes.
@@ -113,12 +140,14 @@ def read_context():
     """
     previous = getattr(_reads, 'current', None)
     if previous is not None and previous[0] == ROOT:
+        if observation_store()[1] != previous[2]:
+            raise ObservationStoreChanged('状态数据库已更换')
         yield
         return
-    with contextlib.closing(database()) as db:
+    with open_observation_database() as ((root, identity), db):
         db.isolation_level = None
         db.execute('PRAGMA query_only=ON')
-        _reads.current = (ROOT, db)
+        _reads.current = (root, db, identity)
         try:
             yield
         finally:
@@ -127,16 +156,23 @@ def read_context():
 
 def query(sql, values=(), one=False):
     context = getattr(_reads, 'current', None)
-    connection = (contextlib.nullcontext(context[1]) if context and context[0] == ROOT
-                  else contextlib.closing(database()))
+    if context and context[0] == ROOT:
+        if observation_store()[1] != context[2]:
+            raise ObservationStoreChanged('状态数据库已更换')
+        connection = contextlib.nullcontext(context[1])
+    else:
+        connection = contextlib.closing(database())
     with connection as db:
         rows = [dict(r) for r in db.execute(sql, values)]
     return (rows[0] if rows else None) if one else rows
 
 
-def write(sql, values=()):
-    with contextlib.closing(database()) as db, db:
+def write(sql, values=(), *, db=None):
+    if db is not None:
         db.execute(sql, values)
+    else:
+        with contextlib.closing(database()) as owned, owned:
+            owned.execute(sql, values)
 
 
 def live_runtimes():
@@ -147,15 +183,20 @@ def live_runtimes():
         'WHERE r.ended IS NULL')]
 
 
-def set_run(run_id, **fields):
+def set_run(run_id, *, db=None, **fields):
     if 'runtime' in fields:
         fields['runtime'] = json.dumps(fields['runtime'])
     write('UPDATE runs SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?',
-          list(fields.values()) + [run_id])
+          list(fields.values()) + [run_id], db=db)
 
 
-def latest(service_id):
-    item = query('SELECT * FROM runs WHERE service_id=? ORDER BY started DESC LIMIT 1', [service_id], True)
+def latest(service_id, *, db=None):
+    sql = 'SELECT * FROM runs WHERE service_id=? ORDER BY started DESC LIMIT 1'
+    if db is None:
+        item = query(sql, [service_id], True)
+    else:
+        row = db.execute(sql, [service_id]).fetchone()
+        item = dict(row) if row is not None else None
     if item:
         item['runtime'] = json.loads(item['runtime'])
     return item
@@ -282,12 +323,12 @@ def health(url):
         return 'unavailable'
 
 
-def new_run(service_id, runtime=None, started=None):
+def new_run(service_id, runtime=None, started=None, *, db=None):
     run_id = uid()
     log = str(ROOT / 'logs' / (run_id + '.log'))
     storage.private_directory(ROOT / 'logs')
     write('INSERT INTO runs(id,service_id,started,state,runtime,log) VALUES (?,?,?,?,?,?)',
-          [run_id, service_id, started if started is not None else timestamp(), 'starting', json.dumps(runtime or {}), log])
+          [run_id, service_id, started if started is not None else timestamp(), 'starting', json.dumps(runtime or {}), log], db=db)
     return run_id
 
 
@@ -753,40 +794,49 @@ def observed_url(spec, runtime):
     return url
 
 
-def reconcile_docker_unlocked(item, objects):
+def reconcile_docker_unlocked(item, objects, *, db=None):
     runtime = docker_runtime(objects)
-    run = latest(item['id'])
+    run = latest(item['id'], db=db)
     running = bool(objects) and any(o['State']['Running'] for o in objects)
     if running:
         if not run or run['ended'] is not None or (run['runtime'].get('started_at') and
                                                    run['runtime']['started_at'] != runtime['started_at']):
             if run and run['ended'] is None:
-                set_run(run['id'], ended=timestamp(), state='exited')
-            run_id = new_run(item['id'], runtime, started=docker_boundary(objects, 'StartedAt', earliest=True))
-            set_run(run_id, state='running')
+                set_run(run['id'], ended=timestamp(), state='exited', db=db)
+            run_id = new_run(item['id'], runtime, started=docker_boundary(objects, 'StartedAt', earliest=True), db=db)
+            set_run(run_id, state='running', db=db)
+        elif run['state'] != 'running' or run['runtime'] != runtime:
+            set_run(run['id'], state='running', runtime=runtime, db=db)
         else:
-            set_run(run['id'], state='running', runtime=runtime)
+            return run  # An unchanged running container must not fire run/schedule triggers.
     elif objects and (not run or (run['ended'] is not None and run['runtime'].get('started_at') != runtime['started_at'])) and any(
             started and not started.startswith('0001-') for started in runtime['started_at']):
         # A container may have exited before the first snapshot, or between two snapshots.
         # Keep that actual run, even when we never saw a running state.
         code = next((o['State'].get('ExitCode') for o in objects if o['State'].get('ExitCode')), objects[0]['State'].get('ExitCode'))
-        run_id = new_run(item['id'], runtime, started=docker_boundary(objects, 'StartedAt', earliest=True))
+        run_id = new_run(item['id'], runtime, started=docker_boundary(objects, 'StartedAt', earliest=True), db=db)
         error = '; '.join(o['State'].get('Error', '') for o in objects if o['State'].get('Error'))
         set_run(run_id, ended=docker_boundary(objects, 'FinishedAt'), state='exited' if code == 0 else 'failed', exit_code=code,
-                error=error or ('容器退出，退出码 ' + str(code) if code else None))
+                error=error or ('容器退出，退出码 ' + str(code) if code else None), db=db)
     elif run and run['ended'] is None:
         code = objects[0]['State'].get('ExitCode') if objects else None
         set_run(run['id'], ended=docker_boundary(objects, 'FinishedAt'), state='stopped' if code == 0 else 'failed',
-                exit_code=code, runtime=runtime)
-    return latest(item['id'])
+                exit_code=code, runtime=runtime, db=db)
+    else:
+        return run
+    return latest(item['id'], db=db)
 
 
-
-def reconcile_docker(item, objects):
+@contextlib.contextmanager
+def docker_reconcile_lock(item):
     # Snapshot requests can overlap across UI and CLI. Serialize each container history.
     with (ROOT / ('reconcile-' + item['id'] + '.lock')).open('a') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def reconcile_docker(item, objects):
+    with docker_reconcile_lock(item):
         return reconcile_docker_unlocked(item, objects)
 
 
@@ -1144,17 +1194,18 @@ def observation_version(service_id, automatic=False, expected=None, *, started=N
     """Capture the registration, latest run and project generation before probing."""
     if started is None:
         started = timestamp()
+    identity = observation_store()
     item = service(service_id)
     project = observation_row(item['project_id'])
     token = observation_token(project)
     if automatic and (not project or not project['auto_scan'] or (expected is not None and expected != token)):
         return None
-    return item, latest(service_id), token, started
+    return item, latest(service_id), token, started, identity
 
 
 def prepare_version(version, *, background=False, managed_identities=None,
                     process_context=None, docker_result=None):
-    item, run, token, started = version
+    item, run, _, _, _ = version
     if docker_result is not None:
         result = probe_observation(item, run, background=background, docker_result=docker_result)
     elif background:
@@ -1162,7 +1213,7 @@ def prepare_version(version, *, background=False, managed_identities=None,
                                    process_context=process_context)
     else:
         result = probe_observation(item, run)
-    return item, run, token, started, timestamp(), result
+    return (*version, timestamp(), result)
 
 
 @read_context()
@@ -1204,45 +1255,78 @@ def check_observation(db, item, run, token, started, automatic):
     return project
 
 
-def finish_observation(service_id, prepared, automatic=False):
+class ObservationWriter:
+    """Thread-owned writer for one batch; no transaction spans two services."""
+    def __init__(self, store, db):
+        self.store = store
+        self.db = db
+        self.owner = threading.get_ident()
+
+    def check(self, probed_store):
+        if threading.get_ident() != self.owner:
+            raise sqlite3.ProgrammingError('观察写连接不能跨线程使用')
+        if self.store != probed_store or self.store != observation_store():
+            raise ObservationStoreChanged('状态数据库已更换')
+
+
+@contextlib.contextmanager
+def observation_write_context(*, automatic):
+    with open_observation_database() as (store, db):
+        if automatic:
+            db.execute('PRAGMA busy_timeout=0')
+        try:
+            yield ObservationWriter(store, db)
+        finally:
+            if db.in_transaction:
+                db.rollback()
+
+
+def finish_observation(service_id, prepared, automatic=False, *, writer=None):
     if prepared is None:
         return cached_observation(service_id)
-    item, run, token, started, checked_at, result = prepared
-    projection, objects, changes = result
+    item, run, token, started, store, checked_at, (projection, objects, changes) = prepared
+    projection = projection.copy()
+    scope = observation_write_context(automatic=automatic) if writer is None else contextlib.nullcontext(writer)
     try:
-        if objects is None and not changes:
-            # A cache-only update shares SQLite's write transaction with the
-            # policy switch and deletions, without taking the operation lock.
-            with database() as db:
+        with scope as current, contextlib.ExitStack() as locks:
+            current.check(store)
+            if objects is not None or changes:
+                if getattr(_mutation, 'root', None) != ROOT:
+                    locks.enter_context(mutation_lock())
+                if objects is not None:
+                    locks.enter_context(docker_reconcile_lock(item))
+            current.check(store)
+            with current.db as db:
                 db.execute('BEGIN IMMEDIATE')
                 project = check_observation(db, item, run, token, started, automatic)
                 if project is not None:
-                    projection['run'] = run
-                    persist_observation(db, service_id, checked_at, projection)
-        else:
-            lock = contextlib.nullcontext() if getattr(_mutation, 'root', None) == ROOT else mutation_lock()
-            with lock:
-                with database() as db:
-                    project = check_observation(db, item, run, token, started, automatic)
-                if project is not None:
                     if objects is not None:
-                        run = reconcile_docker(item, objects)
+                        run = reconcile_docker_unlocked(item, objects, db=db)
                         projection['state'] = 'running' if projection['can_stop'] else (run['state'] if run else 'stopped')
-                    else:
-                        set_run(run['id'], **changes)
-                        run = latest(service_id)
+                    elif changes:
+                        set_run(run['id'], db=db, **changes)
+                        run = latest(service_id, db=db)
                     projection['run'] = run
                     projection['problem'] = projection['problem'] or (run or {}).get('error')
-                    with database() as db:
-                        persist_observation(db, service_id, checked_at, projection)
+                    persist_observation(db, service_id, checked_at, projection)
+                    current.check(store)
         if project is None:
             return cached_observation(service_id)
         return public_service(item, {**projection, 'observation_paused': not bool(project['auto_scan']),
                                      'last_checked_at': checked_at, 'state_fresh': True})
+    except ObservationStoreChanged:
+        if not automatic:
+            raise MutationBusy('状态数据库已更换，请重试') from None
     except MutationBusy:
         if not automatic:
             raise
-        return cached_observation(service_id)
+    except sqlite3.OperationalError as exc:
+        # Python 3.9 exposes only the text; newer versions expose the SQLite result code.
+        code = getattr(exc, 'sqlite_errorcode', None)
+        if (not automatic or not ((code is not None and (code & 0xff) in (5, 6))
+                                  or str(exc).startswith(('database is locked', 'database table is locked')))):
+            raise
+    return cached_observation(service_id)
 
 
 def observe(service_id, *, automatic=False, expected=None):
@@ -1567,7 +1651,7 @@ def restore_project(trash_id):
     proj.setdefault('created_at', min((oldest[sid] for sid in archived_services & oldest.keys()), default=None))
     proj.setdefault('created_at_source', 'estimated' if proj['created_at'] is not None else 'unknown')
     proj.setdefault('auto_scan', 1)
-    proj.setdefault('observation_revision', 0)
+    proj['observation_revision'] = proj.get('observation_revision', 0) + 1
     proj.setdefault('pinned', 0)
     try:
         with database() as db:

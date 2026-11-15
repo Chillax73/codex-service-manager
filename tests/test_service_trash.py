@@ -56,7 +56,8 @@ class ServiceTrashTest(unittest.TestCase):
             restored = self.rpc('service_restore', id=tid)
             operate.assert_not_called()
         self.assertEqual(restored['restored_runs'], 1)
-        self.assertEqual(engine.service('fixture'), old)
+        expected = {**old, 'config_revision': old['config_revision'] + 1}
+        self.assertEqual(engine.service('fixture'), expected)
         self.assertEqual(engine.latest('fixture')['id'], rid)
         self.assertEqual(self.rpc('logs', id='fixture', run_id=rid), log.read_text())
         self.assertEqual(engine.query('SELECT id FROM operations'), [{'id': 'op'}])

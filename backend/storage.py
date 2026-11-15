@@ -54,6 +54,13 @@ def open_database(root):
     return db
 
 
+def database_identity(root):
+    info = (root / 'manager.sqlite').lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError('状态文件身份无效')
+    return info.st_dev, info.st_ino, getattr(info, 'st_birthtime', None)
+
+
 def open_snapshot_database(root):
     path = root / 'manager.sqlite'
     info = path.lstat()

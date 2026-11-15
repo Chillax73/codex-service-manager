@@ -102,7 +102,8 @@ def local_probe_context(service_ids):
 def probe_docker_batch(workers, versions):
     """Discover equivalent Compose groups, then inspect in the default Docker context."""
     results, requested, groups = {}, {}, {}
-    for sid, (item, _, _, _) in versions.items():
+    for sid, version in versions.items():
+        item = version[0]
         spec = item['spec']
         if item['kind'] == 'container':
             cid = spec.get('container_id')
@@ -163,6 +164,21 @@ def probe_docker_batch(workers, versions):
     return results
 
 
+def prepare_local_group(group, identities, started, process_context):
+    """Keep one autocommit reader per executing thread for its assigned items."""
+    results = []
+    with engine.read_context():
+        for sid, token, _ in group:
+            try:
+                prepared = engine.prepare_observation(sid, True, token, background=True,
+                                                      managed_identities=identities, started=started,
+                                                      process_context=process_context)
+                results.append((sid, prepared, None))
+            except ValueError as exc:
+                results.append((sid, None, exc))
+    return results
+
+
 def observe_due(*, visible=False, observed_only=False, priority_project=None):
     """Re-evaluate due work while holding a lock independent of explicit controls."""
     with (engine.ROOT / 'observation.lock').open('a') as lock:
@@ -170,50 +186,59 @@ def observe_due(*, visible=False, observed_only=False, priority_project=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        observed_local = []
-        docker_ids = set()
-        candidates = due_services(visible, observed_only, priority_project, engine.timestamp(),
-                                  observed_local, docker_ids)
-        if not candidates:
-            return 0
-        started = engine.timestamp()
+        observed_local, docker_ids, versions = [], set(), {}
+        with engine.read_context():
+            candidates = due_services(visible, observed_only, priority_project, engine.timestamp(),
+                                      observed_local, docker_ids)
+            if not candidates:
+                return 0
+            started = engine.timestamp()
+            for sid, token, _ in candidates:
+                if sid not in docker_ids:
+                    continue
+                try:
+                    version = engine.observation_version(sid, True, token, started=started)
+                except ValueError:
+                    if engine.query('SELECT id FROM services WHERE id=?', [sid], True):
+                        raise
+                    continue
+                if version is not None and version[0]['kind'] in ('container', 'compose'):
+                    versions[sid] = version
+            process_context = local_probe_context(observed_local)
         identities = managed_identities({pid for _, _, pid in candidates if type(pid) is int and pid > 0})
-        process_context = local_probe_context(observed_local)
+        local = [candidate for candidate in candidates if candidate[0] not in docker_ids]
         checked = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as workers:
-            versions = {}
-            if docker_ids:
-                with engine.read_context():
-                    for sid, token, _ in candidates:
-                        if sid not in docker_ids:
-                            continue
-                        try:
-                            version = engine.observation_version(sid, True, token, started=started)
-                        except ValueError:
-                            if engine.query('SELECT id FROM services WHERE id=?', [sid], True):
-                                raise
-                            continue
-                        if version is not None and version[0]['kind'] in ('container', 'compose'):
-                            versions[sid] = version
             docker_results = probe_docker_batch(workers, versions) if versions else {}
-            pending = {workers.submit(engine.prepare_observation, sid, True, token, background=True,
-                                      managed_identities=identities, started=started,
-                                      process_context=process_context): sid
-                       for sid, token, _ in candidates if sid not in docker_ids}
+            pending = {workers.submit(prepare_local_group, local[i::WORKERS], identities,
+                                      started, process_context): None
+                       for i in range(min(WORKERS, len(local)))}
             for sid, version in versions.items():
                 future = workers.submit(engine.prepare_version, version, background=True,
                                         docker_result=docker_results[sid])
                 pending[future] = sid
-            for future in concurrent.futures.as_completed(pending):
-                sid = pending[future]
-                try:
-                    prepared = future.result()
-                    if prepared is not None:
-                        result = engine.finish_observation(sid, prepared, automatic=True)
-                        checked += bool(result['state_fresh'])
-                except ValueError:
-                    if engine.query('SELECT id FROM services WHERE id=?', [sid], True):
-                        raise
+            if not pending:
+                return 0
+            with engine.observation_write_context(automatic=True) as writer:
+                for future in concurrent.futures.as_completed(pending):
+                    docker_sid = pending[future]
+                    if docker_sid is not None:
+                        try:
+                            results = [(docker_sid, future.result(), None)]
+                        except ValueError as exc:
+                            results = [(docker_sid, None, exc)]
+                    else:
+                        results = future.result()
+                    for sid, prepared, error in results:
+                        try:
+                            if error is not None:
+                                raise error
+                            if prepared is not None:
+                                result = engine.finish_observation(sid, prepared, automatic=True, writer=writer)
+                                checked += bool(result['state_fresh'])
+                        except ValueError:
+                            if engine.query('SELECT id FROM services WHERE id=?', [sid], True):
+                                raise
         return checked
 
 
