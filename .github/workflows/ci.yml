@@ -30,7 +30,9 @@ jobs:
       - name: Release version consistency
         run: /usr/bin/python3 scripts/check_release.py
       - name: Workspace contracts
-        run: /usr/bin/python3 tests/test_support.py
+        run: |
+          /usr/bin/python3 tests/test_support.py
+          /usr/bin/python3 tests/test_fixture_mutation.py
       - name: Endpoint contracts
         run: /usr/bin/python3 tests/test_endpoints.py
       - name: Shell hook compatibility and opt-out
