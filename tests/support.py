@@ -45,3 +45,21 @@ def stop_test_watcher(root):
             raise RuntimeError('测试观察器未结束')
     finally:
         engine.ROOT = previous
+
+
+def dispatch_fixture(request, *, lock_wait=5):
+    """Wait only for the entry lock while setting up a concurrent test fixture.
+
+    The collector remains enabled. Do not retry dispatch: a later failure could
+    follow a successful mutation. Product fail-fast semantics stay unchanged.
+    Use this for setup, never for the operation whose behavior is under test.
+    """
+    from unittest.mock import patch
+    import engine
+    original = engine.mutation_lock
+
+    def fixture_lock(wait=0):
+        return original(wait=max(wait, lock_wait))
+
+    with patch.object(engine, 'mutation_lock', fixture_lock):
+        return engine.dispatch(request)
