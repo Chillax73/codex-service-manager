@@ -35,6 +35,10 @@ jobs:
         run: /usr/bin/python3 tests/test_endpoints.py
       - name: Shell hook compatibility and opt-out
         run: /usr/bin/python3 tests/test_capture_shell.py
+      - name: Capture candidate queries and stale-write guards
+        run: |
+          /usr/bin/python3 tests/test_capture_candidates.py
+          /usr/bin/python3 tests/test_probe_reuse.py
       - name: Private storage and bounded retention
         run: /usr/bin/python3 tests/test_maintenance.py
       - name: Restore and purge deleted service records
@@ -50,6 +54,8 @@ jobs:
           /usr/bin/python3 tests/test_migrations.py
           /usr/bin/python3 tests/test_observation_policy.py
           /usr/bin/python3 tests/test_snapshot_cache.py
+          /usr/bin/python3 tests/test_snapshot_summary.py
+          /usr/bin/python3 tests/test_performance_indexes.py
           /usr/bin/python3 tests/test_project_ordering.py
           /usr/bin/python3 tests/test_service_ordering.py
           /usr/bin/python3 tests/test_service_settings.py
@@ -57,6 +63,10 @@ jobs:
         run: /usr/bin/python3 tests/test_capture.py --suite core
       - name: Native build
         run: ./scripts/build.sh
+      - name: Native snapshot framing and recovery
+        run: /usr/bin/python3 tests/test_snapshot_reader.py
+      - name: Native snapshot publication and filtering
+        run: /usr/bin/python3 tests/test_store_snapshot.py
       - name: Ad-hoc signature
         run: codesign --verify --deep --strict 'build/Codex Service Manager.app'
   dependencies:

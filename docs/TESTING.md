@@ -1,5 +1,22 @@
 # 复现与 CI
 
+## P4-03 启用状态完整对照
+
+先构建当前候选版本，然后从 P4-01 导出后端基线；以下输出目录必须尚不存在：
+
+```sh
+./scripts/build.sh
+mkdir -p .test-state/p4-03-baseline
+git archive dac1e2c backend | tar -x -C .test-state/p4-03-baseline
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_probe_pipeline.py --baseline-backend .test-state/p4-03-baseline/backend --output .test-state/p4-03-matrix --seconds 120 --rounds 3 --count 1000
+```
+
+入口需要 macOS 原生桌面、Swift 构建工具、本机进程和回环端口权限。每组各测旧版和新版，顺序 AB/BA/AB；每版覆盖窗口无活动、菜单无活动、窗口一个 HTTP 服务和菜单三个 HTTP 服务，各 120 秒，完整运行约 50 分钟。测试驱动保持指定可见状态；不要操作测试应用或令电脑休眠。两版使用相同原生驱动、1,000 条合成终态历史，以及通过独立 csm 注册表启动的真实 HTTP 服务。FIFO 输入明确为合成检查点，不等于桌面真实 hooks 回调。
+
+采集器、snapshot-worker 和 GUI 分别记录自身/已回收子进程 CPU、RSS/footprint、磁盘写入、SQLite 连接和外部命令计数。测试还验证快照可读及模式一致、检查点确认、服务关联和切回窗口后的退出观察，正常完成或异常退出均只清理本轮拥有的服务。CPU 以单核 100% 为口径；审计计数每两秒落盘，边界存在约两秒误差。若已有本机温度辅助程序则附带传感器读数，否则记录为空。
+
+组件查询规模测试单独执行相同脚本，指定新输出目录并加 `--components-only`，覆盖 260/1,000/5,000 条历史。组件结果不能代替完整守护进程 CPU 验收。所有原始数据留在 ignored 的 `.test-state/`，正式 hooks、目录开关及业务服务不由基准入口更改。
+
 ## 基础回归（无需第三方 Python 包）
 
 ```sh
@@ -104,6 +121,22 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_snapshot_modes.py -
 同负载对照使用真实 macOS 窗口、退出观察器和采集器。260 条登记固定为 196 条暂停且已结束、36 条开启且已结束、19 个受管休眠任务、1 个观察任务、4 个带回环 HTTP 检查的受管任务、4 个 Docker 容器（其中 1 个观察对象）。默认每次预热 8 秒，分别采样窗口、菜单栏及仅后台 24 秒，重建夹具重复 3 次。容器使用支持 `/bin/sh` 和 `sleep` 的本机缓存镜像，禁止拉取和端口发布。所有对象在独立状态目录，仅清理夹具的进程及唯一标签容器。
 
 原始记录包含界面应用快照耗时、三类状态变化的可见延迟，以及管理器、观察器、采集器和子进程的计数。CPU 汇总常驻管理进程及其已回收子进程，写入按 macOS 进程归因，合并短命 Python 的退出计数。测试专用的窗口切换和计数记录对两版本相同。业务夹具与 Docker 守护进程自身的资源不计入管理器开销。
+
+### P4-01 采集候选查询
+
+`PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture_candidates.py` 在独立状态验证零/多候选、260/1,000/5,000 条历史、最新运行及同时间排序、PID 复用、配置/策略/运行改变和删除后的写入保护。CI 运行该入口；测试不操作正式采集器。
+
+完整循环 CPU 对照需要保留修复前的 backend 目录，例如将 `git archive 830df31 backend` 解压到新建的 `.test-state/p4-baseline`，然后执行：
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/benchmark_capture_candidates.py --baseline-backend .test-state/p4-baseline/backend --output .test-state/p4-capture-comparison --rounds 3 --seconds 60 --idle-seconds 15
+```
+
+使用尚未使用过的输出目录。每轮新建 1,000 条合成终态历史和待校正的观察缓存，运行真实 collect 循环、后台观察、ps/lsof 与 FIFO 检查点；通过 scripts/csm 在独立控制库登记测试采集器，结束时只停止测试服务和测试观察器。活动事件指向测试采集器自身，用于固定持续跟踪负载，不声称是桌面真实回调或业务服务吞吐测试。正式采集器、hooks 和项目开关不变。基准按 AB/BA/AB 交替，每轮预热后记录 15 秒无活动跟踪和 60 秒持续跟踪，包含进程自身及已回收子进程 CPU，保留每轮数据；启动时的到期观察回填也计入完整循环。此对照不包含窗口/菜单、温度因果或长时间稳定性验收。
+
+### P4-02 读取及探测复用
+
+`PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_probe_reuse.py` 验证只读连接的线程/根/生命周期边界、无跨查询事务、同轮身份/监听复用、版本改变及失败回退、控制前实时探测，以及首次/已有/并发删除记录的 cwd 处理。完整采集使用 `tests/test_capture.py --suite full`，需要已经准备的 Node/Maven 夹具；其余进程、策略、缓存、迁移和 Docker 入口沿用上述测试说明。P4-03 的完整原生矩阵与性能证据单独验收。
 
 窗口可见时，以观察进程退出 8 秒、容器状态变化 14 秒、HTTP 健康变化 11 秒作为这组夹具的可见延迟预算。它们覆盖按类型调度、探测耗时和界面下一次取数。旧版用同一流程采集后再构建新版。新版可追加 `--verify-native`，在采样结束后检查长连接进程复用、重开窗口、断线提示与恢复、手动刷新及日志选择。
 

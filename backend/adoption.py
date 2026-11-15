@@ -50,21 +50,19 @@ def descendants(table, root):
     return depths
 
 
-def exclusive_scope(item, members, table):
-    for row in engine.query('SELECT id FROM services WHERE id<>?', [item['id']]):
-        run = engine.latest(row['id'])
-        if not run or run['ended'] is not None:
+def exclusive_scope(item, members, table, runs=None):
+    for sid, runtime in engine.live_runtimes() if runs is None else runs:
+        if sid == item['id']:
             continue
-        runtime = run['runtime']
         for pid_key, birth_key in (('pid', 'birth'), ('child_pid', 'child_birth'), ('supervisor_pid', 'supervisor_birth')):
             pid = runtime.get(pid_key)
             if pid in members and table[pid]['birth'] == runtime.get(birth_key):
                 raise RuntimeError('启动器与其他已登记服务共用，拒绝扩大停止范围')
 
 
-def stop_plan(item, table=None, tracked=None, listeners=None):
+def stop_plan(item, table=None, tracked=None, listeners=None, *, run=None, other_runs=None):
     import capture
-    run = engine.latest(item['id']) or {}
+    run = (engine.latest(item['id']) or {}) if run is None else run
     runtime = run.get('runtime', {})
     table = capture.process_table() if table is None else table
     pid = runtime.get('pid')
@@ -81,7 +79,7 @@ def stop_plan(item, table=None, tracked=None, listeners=None):
         for m in members:
             if not set(descendants(table, m['pid'])).issubset(allowed):
                 raise RuntimeError('停止失败后出现新的未知子进程，拒绝扩大控制范围')
-        exclusive_scope(item, allowed, table)
+        exclusive_scope(item, allowed, table, other_runs)
         return {'root': members[0]['pid'], 'members': members}
     if pid not in table or table[pid]['birth'] != runtime.get('birth'):
         raise RuntimeError('观察进程出生身份无法确认，拒绝控制旧 PID')
@@ -118,7 +116,7 @@ def stop_plan(item, table=None, tracked=None, listeners=None):
     listeners = capture.listeners() if listeners is None else listeners
     if len([p for p in depths if listeners.get(p)]) > 1:
         raise RuntimeError('启动器包含多个监听服务，需分别配置独立控制范围')
-    exclusive_scope(item, depths, table)
+    exclusive_scope(item, depths, table, other_runs)
     members = [{**table[p], **verified(p), 'pid': p, 'depth': depths[p]} for p in depths]
     return {'root': root, 'members': sorted(members, key=lambda m: m['depth'])}
 

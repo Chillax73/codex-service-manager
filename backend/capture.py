@@ -144,6 +144,7 @@ def receive_arms(fd, tracked):
             (channel_dir() / (event_id + '.ack')).touch(mode=0o600)
         except (ValueError, KeyError, OSError, RuntimeError):
             continue
+    return table
 
 
 def event_dir():
@@ -197,20 +198,26 @@ def record_failure(stage, exc):
 
 def process_table():
     """No command arguments or environment are collected."""
-    output = engine.command(['/bin/ps', '-axo', 'pid=,ppid=,lstart=,stat=,comm='], timeout=5)
+    output = engine.command(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,lstart=,stat=,comm='], timeout=5)
     result = {}
     for line in output.splitlines():
-        parts = line.split(None, 8)
-        if len(parts) == 9 and parts[0].isdigit() and 'Z' not in parts[7]:
+        parts = line.split(None, 9)
+        if len(parts) == 10 and parts[0].isdigit() and 'Z' not in parts[8]:
             pid = int(parts[0])
-            result[pid] = {'pid': pid, 'ppid': int(parts[1]), 'birth': ' '.join(parts[2:7]),
-                           'name': Path(parts[8]).name}
+            result[pid] = {'pid': pid, 'ppid': int(parts[1]), 'pgid': int(parts[2]),
+                           'birth': ' '.join(parts[3:8]), 'name': Path(parts[9]).name}
     return result
 
 
-def listeners():
+def listeners(pids=None):
     # lsof exits 1 when no sockets match; that is an empty observation, not a failure.
-    p = subprocess.run(['/usr/sbin/lsof', '-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'],
+    selection = []
+    if pids is not None:
+        pids = sorted({p for p in pids if type(p) is int and p > 0})
+        if not pids:
+            return {}
+        selection = ['-a', '-p', ','.join(map(str, pids))]
+    p = subprocess.run(['/usr/sbin/lsof', '-nP', *selection, '-iTCP', '-sTCP:LISTEN', '-Fpn'],
                        capture_output=True, text=True, timeout=8)
     if p.returncode not in (0, 1):
         raise RuntimeError('无法观察本机监听端口')
@@ -379,14 +386,21 @@ def arm(event_id, pid):
         time.sleep(.05)
 
 
-def managed_processes():
+def managed_processes(table=None):
+    table = process_table() if table is None else table
     result = set()
-    for row in engine.query('SELECT s.id,s.spec FROM services s JOIN projects p ON p.id=s.project_id WHERE p.auto_scan=1'):
-        if json.loads(row['spec']).get('management') == 'observed':
-            continue
-        runtime = (engine.latest(row['id']) or {}).get('runtime', {})
-        if engine.matches(runtime.get('supervisor_pid'), runtime.get('supervisor_birth')):
-            result.update(engine.group_members(runtime.get('pgid', 0)))
+    groups = {}
+    for pid, entry in table.items():
+        groups.setdefault(entry.get('pgid'), []).append(pid)
+    for row in engine.query(
+            'SELECT r.runtime FROM services s JOIN projects p ON p.id=s.project_id '
+            'JOIN runs r ON r.id=(SELECT id FROM runs WHERE service_id=s.id ORDER BY started DESC LIMIT 1) '
+            'WHERE p.auto_scan=1 AND r.ended IS NULL '
+            'AND COALESCE(json_extract(s.spec,\'$.management\'),\'\')<>\'observed\''):
+        runtime = json.loads(row['runtime'])
+        entry = table.get(runtime.get('supervisor_pid'))
+        if entry and entry['birth'] == runtime.get('supervisor_birth'):
+            result.update(groups.get(runtime.get('pgid', 0), []))
     return result
 
 
@@ -518,16 +532,25 @@ def collect_containers(events, policies):
 
 def update_observed_process(event, previous, item, ports, table):
     pid = item['pid']
-    cwd = process_cwd(pid, event['cwd'])
-    with engine.mutation_lock():
-        if not scan_allowed(event_project(event), previous):
-            return
+    def existing_process():
         rows = engine.query('SELECT s.id,r.runtime,p.auto_scan FROM services s JOIN runs r ON r.service_id=s.id '
                             'JOIN projects p ON p.id=s.project_id '
                             'WHERE r.ended IS NULL AND s.spec LIKE ?', ['%"management": "observed"%'])
-        existing = next((row for row in rows if json.loads(row['runtime']).get('pid') == pid and
-                         json.loads(row['runtime']).get('birth') == item['birth']), None)
+        for row in rows:
+            runtime = json.loads(row['runtime'])
+            if runtime.get('pid') == pid and runtime.get('birth') == item['birth']:
+                return row
+        return None
+    # Runtime cwd is used only on first registration. Never run lsof while the
+    # mutation lock is held, or repeatedly probe a value the update does not use.
+    cwd = process_cwd(pid, event['cwd']) if existing_process() is None else None
+    with engine.mutation_lock():
+        if not scan_allowed(event_project(event), previous):
+            return
+        existing = existing_process()
         if existing is None:
+            if cwd is None:
+                return  # Concurrent deletion: rediscover with a fresh cwd next pass.
             record_process(event, item, ports, cwd, table)
         elif existing['auto_scan']:
             registered = engine.service(existing['id'])
@@ -546,7 +569,35 @@ def update_observed_process(event, previous, item, ports, table):
                          [json.dumps(registered['spec']), name, kind, registered['id']])
 
 
-def collect_once(tracked, first_seen, events=None):
+def scope_candidates(tracked, events):
+    """Read only live local candidates, without one connection per historical row.
+
+    This snapshot is for discovery only. The caller still rechecks policy, service
+    and latest run under the mutation lock before saving a scope or recipe.
+    """
+    if not any(info['event'] in events for info in tracked.values()):
+        return
+    run_fields = ('id', 'service_id', 'started', 'ended', 'state', 'exit_code', 'runtime', 'error', 'log')
+    columns = ','.join('r.' + name + ' AS candidate_run_' + name for name in run_fields)
+    # Match engine.latest, including its existing ordering for equal timestamps.
+    # Fetch before closing: do not retain a connection/transaction during probes.
+    with closing(engine.database()) as db:
+        rows = [dict(row) for row in db.execute(
+            'SELECT s.*,' + columns + ' FROM services s JOIN projects p ON p.id=s.project_id '
+            'JOIN runs r ON r.id=(SELECT id FROM runs WHERE service_id=s.id ORDER BY started DESC LIMIT 1) '
+            'WHERE p.auto_scan=1 AND s.spec LIKE ? AND s.kind IN (\'process\',\'task\') '
+            'AND r.ended IS NULL AND r.state=\'running\'', ['%"management": "observed"%'])]
+    for item in rows:
+        run = {name: item.pop('candidate_run_' + name) for name in run_fields}
+        run['runtime'] = json.loads(run['runtime'])
+        if tracked.get(run['runtime'].get('pid'), {}).get('event') not in events:
+            continue
+        item['spec'] = json.loads(item['spec'])
+        yield item, run
+
+
+@engine.read_context()
+def collect_once(tracked, first_seen, events=None, *, event_index=None, processes=None):
     if events is None:
         events = load_events()
     events = [e for e in events if e.get('shell')]
@@ -560,9 +611,6 @@ def collect_once(tracked, first_seen, events=None):
         policies[event['id']] = project_by_cwd[cwd]
     by_id = {e['id']: e for e in events
              if policies[e['id']] is None or policies[e['id']]['auto_scan']}
-    enabled_observed = engine.query(
-        'SELECT s.id,s.spec,s.project_id FROM services s JOIN projects p ON p.id=s.project_id '
-        'WHERE p.auto_scan=1 AND s.spec LIKE ?', ['%"management": "observed"%'])
     by_project = {p['id']: p for p in projects.values()}
     prior = tracked
     dormant = {pid: info for pid, info in tracked.items()
@@ -570,7 +618,7 @@ def collect_once(tracked, first_seen, events=None):
     tracked = {}
     table, ports = {}, {}
     if by_id:
-        table = process_table()
+        table = process_table() if processes is None else processes
         # Keep paused lineage dormant so recovery can verify the same births on resume.
         tracked = {pid: info for pid, info in prior.items()
                    if info['event'] in by_id and pid in table and table[pid]['birth'] == info['birth']}
@@ -580,8 +628,8 @@ def collect_once(tracked, first_seen, events=None):
                 tracked.setdefault(shell['pid'], {'birth': shell['birth'], 'event': event['id'], 'root': True})
         extend_tracking(table, tracked)
         if tracked:
-            ports = listeners()
-            managed = managed_processes()
+            ports = listeners(tracked)
+            managed = managed_processes(table)
             parents = {p['ppid'] for p in table.values()}
             for pid, info in tracked.items():
                 if pid in managed or pid == os.getpid() or table[pid]['name'] in ('lsof', 'ps'):
@@ -616,25 +664,21 @@ def collect_once(tracked, first_seen, events=None):
     # Persist launch scope and verified recipes only against the same project and run.
     saved = {str(pid): info for pid, info in tracked.items()}
     import adoption
-    for row in enabled_observed:
-        try:
-            item = engine.service(row['id'])
-        except ValueError:
-            continue  # It may have been deleted while collecting other services.
-        run = engine.latest(item['id'])
-        if item['kind'] not in ('process', 'task') or not run or run['ended'] is not None or run['state'] != 'running':
-            continue
+    other_runs = None
+    for item, run in scope_candidates(tracked, by_id):
         info = tracked.get(run['runtime'].get('pid')) or {}
         event = by_id.get(info.get('event'))
         if not event or (run['runtime'].get('launch_members') and (item['spec'].get('argv') or not event.get('launch_recipe'))):
             continue
-        previous = by_project.get(row['project_id'])
-        if not scan_allowed(engine.observation_row(row['project_id']), previous):
+        previous = by_project.get(item['project_id'])
+        if not scan_allowed(engine.observation_row(item['project_id']), previous):
             continue
         try:
-            plan = adoption.stop_plan(item, table, saved, ports)
+            if other_runs is None:
+                other_runs = engine.live_runtimes()
+            plan = adoption.stop_plan(item, table, saved, ports, run=run, other_runs=other_runs)
             with engine.mutation_lock():
-                if (scan_allowed(engine.observation_row(row['project_id']), previous) and
+                if (scan_allowed(engine.observation_row(item['project_id']), previous) and
                         scan_allowed(event_project(event), policies[event['id']]) and
                         engine.service(item['id']) == item and engine.latest(item['id']) == run):
                     adoption.remember_scope(item, plan)
@@ -649,6 +693,8 @@ def collect_once(tracked, first_seen, events=None):
         docker_error = None
     except Exception as exc:
         docker_error = record_failure('docker', exc)
+    if event_index is not None:
+        event_index.retire(by_id.values(), table, tracked, recent_docker_event, time.time())
     return tracked, first_seen, docker_error
 
 
@@ -687,6 +733,8 @@ def collect():
         first_seen = {}
         own = engine.identity(os.getpid())
         channel = open_channel()
+        from event_index import EventIndex
+        event_index = EventIndex(event_dir())
         events, event_revision = [], None
         next_event_reload = next_heartbeat = 0
         last_error = None
@@ -695,17 +743,19 @@ def collect():
             error = None
             active = bool(tracked)
             try:
-                receive_arms(channel, tracked)
+                processes = receive_arms(channel, tracked)
                 directory = event_dir().stat()
                 revision = (directory.st_ino, directory.st_mtime_ns)
                 now = time.monotonic()
                 # Hook writers replace event files atomically. The periodic reload
                 # also retries any file that could not be read on the last pass.
                 if revision != event_revision or now >= next_event_reload:
-                    events = load_events()
+                    event_index.refresh()
                     event_revision = revision
                     next_event_reload = now + 60
-                tracked, first_seen, error = collect_once(tracked, first_seen, events)
+                events = event_index.events(tracked)
+                tracked, first_seen, error = collect_once(tracked, first_seen, events, event_index=event_index,
+                                                         processes=processes)
                 observations.tick()
                 wall_time = time.time()
                 active = bool(tracked) or any(recent_docker_event(event, wall_time) for event in events)
@@ -715,7 +765,7 @@ def collect():
             if now >= next_heartbeat or error != last_error:
                 engine.write('INSERT OR REPLACE INTO metadata VALUES (?,?)', ['capture', json.dumps({
                     'pid': os.getpid(), 'birth': own['birth'], 'updated': time.time(), 'error': error,
-                    'tracked': len(tracked), 'event_count': len(events)})])
+                    'tracked': len(tracked), 'event_count': len(event_index)})])
                 next_heartbeat = now + HEARTBEAT_INTERVAL
                 last_error = error
             # A shell checkpoint wakes an idle collector immediately.

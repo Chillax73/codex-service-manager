@@ -250,6 +250,21 @@ class EngineAcceptance(unittest.TestCase):
         self.assertEqual(engine.dispatch({'action':'logs','id':'log-history','run_id':second['run']['id']}).strip(),'second-run-output')
         self.assertEqual(engine.dispatch({'action':'logs','id':'log-history','run_id':engine.uid()}),'')
 
+    def test_15_live_supervisor_survives_additive_scheduler_install(self):
+        import observation_schedule
+        item = self.launch('schedule-install')
+        item = self.wait('schedule-install', lambda s: s['state'] == 'running')
+        run_before = engine.latest(item['id'])
+        identity_before = engine.identity(run_before['runtime']['supervisor_pid'])
+        self.assertFalse(engine.query("SELECT name FROM sqlite_master WHERE name='observation_schedule'"))
+        observation_schedule.ensure()
+        self.assertEqual(engine.query('PRAGMA user_version', one=True)['user_version'], 1)
+        self.assertEqual(engine.identity(run_before['runtime']['supervisor_pid']), identity_before)
+        self.assertEqual(engine.latest(item['id'])['id'], run_before['id'])
+        self.assertEqual(self.stop(item['id'])['state'], 'stopped')
+        self.assertIsNotNone(engine.latest(item['id'])['ended'])
+        self.assertIsNotNone(engine.query('SELECT * FROM observation_schedule WHERE service_id=?', [item['id']], True))
+
 
 if __name__ == '__main__':
     (BASE / '.test-state').mkdir(exist_ok=True)

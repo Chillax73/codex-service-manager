@@ -28,34 +28,21 @@ def interval(kind, spec, projection, visible):
     return 3.5 if visible else 12
 
 
-def due_services(visible, observed_only, priority_project, now):
+def due_services(visible, observed_only, priority_project, now, observed_local=None):
+    from observation_schedule import due_rows
     candidates = []
-    rows = engine.query("""SELECT s.id,s.kind,s.spec,s.project_id,p.created_at AS project_created_at,
-        p.observation_revision,r.id AS run_id,r.state AS run_state,r.ended AS run_ended,r.runtime,
-        o.checked_at,o.projection
-        FROM services s JOIN projects p ON p.id=s.project_id AND p.auto_scan=1
-        LEFT JOIN service_observations o ON o.service_id=s.id
-        LEFT JOIN runs r ON r.id=(SELECT id FROM runs WHERE service_id=s.id ORDER BY started DESC LIMIT 1)""")
-    for row in rows:
+    for row in due_rows(visible, observed_only, priority_project, now, BATCH_SIZE):
         spec = json.loads(row['spec'])
-        if spec.get('source') == 'internal' or (observed_only and spec.get('management') != 'observed'):
-            continue
-        projection = json.loads(row['projection']) if row['projection'] else None
-        run = (projection or {}).get('run') or {}
-        changed = (run.get('id'), run.get('state'), run.get('ended')) != (
-            row['run_id'], row['run_state'], row['run_ended'])
-        checked = row['checked_at']
-        due_at = checked + interval(row['kind'], spec, projection, visible) if projection else 0
-        if changed or due_at <= now:
-            live = row['kind'] in ('container', 'compose') or row['run_state'] in engine.ACTIVE
-            priority = (row['project_id'] != priority_project, not changed, not live, due_at, row['id'])
-            token = (row['project_id'], row['project_created_at'], row['observation_revision'])
-            pid = None
-            if (row['kind'] in ('task', 'process') and spec.get('management') != 'observed'
-                    and row['runtime'] and row['run_ended'] is None):
-                pid = json.loads(row['runtime']).get('supervisor_pid')
-            candidates.append((priority, row['id'], token, pid))
-    return [(sid, token, pid) for _, sid, token, pid in sorted(candidates)[:BATCH_SIZE]]
+        if (observed_local is not None and row['kind'] in ('task', 'process')
+                and spec.get('management') == 'observed' and row['runtime'] and row['run_ended'] is None):
+            observed_local.append(row['id'])
+        token = (row['project_id'], row['project_created_at'], row['observation_revision'])
+        pid = None
+        if (row['kind'] in ('task', 'process') and spec.get('management') != 'observed'
+                and row['runtime'] and row['run_ended'] is None):
+            pid = json.loads(row['runtime']).get('supervisor_pid')
+        candidates.append((row['id'], token, pid))
+    return candidates
 
 
 def managed_identities(pids):
@@ -79,6 +66,37 @@ def managed_identities(pids):
     return identities
 
 
+def local_probe_context(service_ids):
+    """A single immutable observation batch, never passed to actual controls."""
+    if not service_ids:
+        return None
+    import adoption
+    import capture
+    try:
+        with engine.read_context():
+            versions = {}
+            for sid in service_ids:
+                try:
+                    versions[sid] = (engine.service(sid), engine.latest(sid))
+                except ValueError:
+                    continue
+            table = capture.process_table()
+            pids = set()
+            for item, run in versions.values():
+                runtime = (run or {}).get('runtime', {})
+                roots = [runtime.get('pid')] + [m['pid'] for key in ('control_members', 'launch_members')
+                                                for m in runtime.get(key, [])]
+                for pid in roots:
+                    if pid in table:
+                        pids.update(adoption.descendants(table, pid))
+            row = engine.query("SELECT value FROM metadata WHERE key='capture_tracking'", one=True)
+            return {'versions': versions, 'table': table,
+                    'tracked': json.loads(row['value']) if row else {},
+                    'listeners': capture.listeners(pids), 'runs': engine.live_runtimes()}
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None  # Existing individual probes retain their conservative failures.
+
+
 def observe_due(*, visible=False, observed_only=False, priority_project=None):
     """Re-evaluate due work while holding a lock independent of explicit controls."""
     with (engine.ROOT / 'observation.lock').open('a') as lock:
@@ -86,15 +104,18 @@ def observe_due(*, visible=False, observed_only=False, priority_project=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        candidates = due_services(visible, observed_only, priority_project, engine.timestamp())
+        observed_local = []
+        candidates = due_services(visible, observed_only, priority_project, engine.timestamp(), observed_local)
         if not candidates:
             return 0
         started = engine.timestamp()
         identities = managed_identities({pid for _, _, pid in candidates if type(pid) is int and pid > 0})
+        process_context = local_probe_context(observed_local)
         checked = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as workers:
             pending = {workers.submit(engine.prepare_observation, sid, True, token, background=True,
-                                      managed_identities=identities, started=started): sid
+                                      managed_identities=identities, started=started,
+                                      process_context=process_context): sid
                        for sid, token, _ in candidates}
             for future in concurrent.futures.as_completed(pending):
                 sid = pending[future]
@@ -174,7 +195,8 @@ def serve(stdin=sys.stdin, stdout=sys.stdout):
                     if (request.get('action') != 'snapshot_cached' or type(visible) is not bool
                             or (priority is not None and not isinstance(priority, str))):
                         raise ValueError('无效的缓存快照请求')
-                    result = engine.snapshot_cached(db, visible=visible, component_identities=observer.identities)
+                    result = engine.snapshot_cached(db, visible=visible, component_identities=observer.identities,
+                                                    snapshot_format=request.get('snapshot_format', 'full'))
                     result['observation_available'] = observer.available
                     observer.update(visible, priority)
                     response = {'ok': True, 'result': result}

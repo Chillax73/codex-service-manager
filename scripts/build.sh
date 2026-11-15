@@ -6,7 +6,7 @@ mkdir -p "$CSM_BUNDLE/Contents/MacOS" "$CSM_BUNDLE/Contents/Resources/backend" "
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos13.0" -O -module-cache-path "$CSM_BUILD_ROOT/build/module-cache" -framework SwiftUI -framework AppKit "$CSM_BUILD_ROOT/app/Sources/ServiceManager.swift" "$CSM_BUILD_ROOT/app/Sources/Models.swift" "$CSM_BUILD_ROOT/app/Sources/Status.swift" "$CSM_BUILD_ROOT/app/Sources/Store.swift" "$CSM_BUILD_ROOT/app/Sources/Infrastructure.swift" -o "$CSM_BUNDLE/Contents/MacOS/ServiceManager"
 cp "$CSM_BUILD_ROOT/backend/engine.py" "$CSM_BUILD_ROOT/backend/cli.py" "$CSM_BUILD_ROOT/backend/capture.py" "$CSM_BUILD_ROOT/backend/adoption.py" "$CSM_BUILD_ROOT/backend/storage.py" "$CSM_BUILD_ROOT/backend/maintenance.py" "$CSM_BUNDLE/Contents/Resources/backend/"
 cp "$CSM_BUILD_ROOT/backend/service_trash.py" "$CSM_BUNDLE/Contents/Resources/backend/"
-cp "$CSM_BUILD_ROOT/backend/observation.py" "$CSM_BUNDLE/Contents/Resources/backend/"
+cp "$CSM_BUILD_ROOT/backend/observation_schedule.py" "$CSM_BUILD_ROOT/backend/event_index.py" "$CSM_BUILD_ROOT/backend/observation.py" "$CSM_BUNDLE/Contents/Resources/backend/"
 cp "$CSM_BUILD_ROOT/scripts/csm" "$CSM_BUNDLE/Contents/Resources/scripts/"
 cat > "$CSM_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

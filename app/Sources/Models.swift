@@ -8,6 +8,11 @@ struct ProjectItem: Identifiable, Equatable {
     let manual: Bool, codexExit: Bool
     let autoScan, pinned, captureEnabled: Bool
     let lastCheckedAt: Double?
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.cwd == rhs.cwd &&
+        lhs.manual == rhs.manual && lhs.codexExit == rhs.codexExit &&
+        lhs.autoScan == rhs.autoScan && lhs.pinned == rhs.pinned && lhs.captureEnabled == rhs.captureEnabled
+    }
     init(_ data: [String: Any]) {
         id = data["id"] as? String ?? ""; name = data["name"] as? String ?? ""
         cwd = data["cwd"] as? String ?? ""
@@ -19,7 +24,7 @@ struct ProjectItem: Identifiable, Equatable {
         lastCheckedAt = data["last_checked_at"] as? Double
     }
 }
-struct DeletedProjectItem: Identifiable {
+struct DeletedProjectItem: Identifiable, Equatable {
     let id: String, name: String, cwd: String
     let deletedAt: Double
     init(_ data: [String: Any]) {
@@ -27,8 +32,21 @@ struct DeletedProjectItem: Identifiable {
         deletedAt = data["deleted_at"] as? Double ?? 0
     }
 }
-struct ServiceItem: Identifiable {
+struct ServiceItem: Identifiable, Equatable {
     let raw: [String: Any]
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // Versioned summaries cover business content; only cache age changes
+        // independently. Avoid bridging and comparing every nested dictionary.
+        if lhs.isSummary && rhs.isSummary, let revision = lhs.detailRevision,
+           !revision.isEmpty, rhs.detailRevision != nil {
+            return lhs.id == rhs.id && revision == rhs.detailRevision && lhs.cacheState == rhs.cacheState
+        }
+        var left = lhs.raw, right = rhs.raw
+        left.removeValue(forKey: "last_checked_at")
+        right.removeValue(forKey: "last_checked_at")
+        // A missing check time changes pending/recent presentation even on legacy replies.
+        return lhs.cacheState == rhs.cacheState && NSDictionary(dictionary: left).isEqual(to: right)
+    }
     var id: String { raw["id"] as? String ?? "" }
     var name: String { raw["name"] as? String ?? "" }
     var projectID: String { raw["project_id"] as? String ?? "" }
@@ -51,6 +69,8 @@ struct ServiceItem: Identifiable {
     var hasPendingConfiguration: Bool { raw["has_pending_configuration"] as? Bool ?? false }
     var configuration: [String: Any] { raw["configuration"] as? [String: Any] ?? spec }
     var configurationRevision: Int { raw["config_revision"] as? Int ?? 0 }
+    var isSummary: Bool { raw["summary"] as? Bool == true }
+    var detailRevision: String? { raw["detail_revision"] as? String }
     var isLocal: Bool { kind == "process" || kind == "task" }
     var managementSummary: String {
         if !observed { return "已接管 · 支持启停和重启" }

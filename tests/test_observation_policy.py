@@ -184,7 +184,7 @@ class ObservationPolicyTest(unittest.TestCase):
     def test_collector_discards_new_service_if_project_pauses_mid_probe(self):
         event = {'id': 'a', 'cwd': self.projects['a']['cwd'], 'shell': {'pid': 101, 'birth': 'a'}}
         table = {101: {'pid': 101, 'ppid': 1, 'birth': 'a', 'name': 'python'}}
-        def listener_probe():
+        def listener_probe(pids=None):
             self.toggle('a', False)
             return {101: [7001]}
         with patch.object(capture, 'load_events', return_value=[event]), \
