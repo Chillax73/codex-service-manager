@@ -6,7 +6,7 @@
 
 目标平台：macOS；使用对象：个人开发者。
 
-现行行为和兼容要求见 [主规格](../specs/001-service-manager/spec.md)。实施进度见 [任务清单](../specs/001-service-manager/tasks.md)，历次通过范围见 [验收索引](../specs/001-service-manager/acceptance.md)。
+现行行为和兼容要求见 [主规格](project/spec.md)。实施进度见 [任务清单](project/tasks.md)，历次通过范围见 [验收索引](project/acceptance.md)。
 
 ## 1. 产品目标
 
@@ -126,7 +126,7 @@ C-14 至 C-16 在 2026-10-13 补充确认；本机已交付并完成实际窗口
 
 ## 9. 验收与证据
 
-A-01 至 A-16 原版完整控制的逐项标准和证据见 [验收索引](../specs/001-service-manager/acceptance.md) 与 [原版报告](results/VALIDATION.md)。新增自动观察规格与 G-01 至 G-10 完成条件见 [spec](../specs/001-service-manager/spec.md)。
+A-01 至 A-16 原版完整控制的逐项标准和证据见 [验收索引](project/acceptance.md) 与 [原版报告](results/VALIDATION.md)。新增自动观察规格与 G-01 至 G-10 完成条件见 [spec](project/spec.md)。
 
 G-01 至 G-07 常见路径有本机证据及边界；G-08 旧聊天漏记未通过，G-09 发现兜底未实现，G-10 的可靠停止、常见命令配置、显式补配置和监督重启已交付；任意复杂包装自动拆分仍有边界，见 [普通启动接管](results/ORDINARY_ADOPTION.md)。新增结果见 [GLOBAL_CAPTURE.md](results/GLOBAL_CAPTURE.md)，项目管理见 [PROJECT_MANAGEMENT.md](results/PROJECT_MANAGEMENT.md)。
 
@@ -138,7 +138,7 @@ G-01 至 G-07 常见路径有本机证据及边界；G-08 旧聊天漏记未通�
 
 已完成：统一管理模型与监督器、Docker/Compose、原生工作区/菜单栏、独立退出观察器、配套接入、原版真实验收、项目改名/删除/恢复，以及新聊天常见路径自动观察。
 
-旧聊天配置加载、可信来源的后台发现兜底和复杂包装拆分的实施顺序见 [任务清单](../specs/001-service-manager/tasks.md)。设计、数据与接口分别见 [设计](../specs/001-service-manager/design.md)、[数据模型](../specs/001-service-manager/data-model.md) 和 [接口契约](../specs/001-service-manager/contracts.json)。
+旧聊天配置加载、可信来源的后台发现兜底和复杂包装拆分的实施顺序见 [任务清单](project/tasks.md)。设计、数据与接口分别见 [设计](project/design.md)、[数据模型](project/data-model.md) 和 [接口契约](project/contracts.json)。
 
 旧聊天、多项目/worktree、未关联对象排除、已退出对象和复杂 Docker 路径应有真实验收。睡眠唤醒、系统重启恢复、Intel/其他 macOS 版本的完整桌面流程以及二进制签名/公证另行验证，不能由当前环境结果推导。
 

@@ -1,6 +1,6 @@
 # 后台观察剩余 CPU：诊断与下一步方案
 
-2026-11-15，诊断基线为代码 e3c9ce4 和部署记录 01f310d。当时正式应用为 P4-02。后续实施进度见 [任务清单](../../specs/001-service-manager/tasks.md)。
+2026-11-15，诊断基线为代码 e3c9ce4 和部署记录 01f310d。当时正式应用为 P4-02。后续实施进度见 [任务清单](../project/tasks.md)。
 
 ## 实测结论
 
@@ -92,7 +92,7 @@ worker 约 66% 的 CPU 来自子进程。采样末尾可读取的四个核心传
 
 缺失对象退避可以后续评估，但必须区分已确认缺失与 daemon 故障；停止容器还可能外部重启，不能直接全部改成 120 秒。若将来修改刷新策略，须同步 `observation.interval` 与持久化 SQL view；当前 `ensure` 仅首次创建，单改 Python 或 SQL 模板不会迁移已有数据库。需要版本化迁移、旧状态兼容和回退测试。
 
-P4-04～06 的设计决策与验收条件见 [后台观察优化设计](../../specs/001-service-manager/worker-observation-design.md)。
+P4-04～06 的设计决策与验收条件见 [后台观察优化设计](../project/worker-observation-design.md)。
 
 ## 本次证据和交付边界
 

@@ -4,7 +4,7 @@
 
 当前源码版本为 **1.0.0**，应用构建号为 **3**。该版本增加项目扫描管理、排序与置顶、服务配置与删除、五项状态筛选和空闲资源优化。各版本变更见 [更新记录](CHANGELOG.md)。
 
-既有 A-01 至 A-16 本机验收包含真实 Codex 退出检测，实测环境为 Apple Silicon / macOS 15.7.3。构建目标为 macOS 13+，CI 矩阵为 macOS 15 和 26。各轮覆盖与实际结果见 [验收证据索引](specs/001-service-manager/acceptance.md)。
+既有 A-01 至 A-16 本机验收包含真实 Codex 退出检测，实测环境为 Apple Silicon / macOS 15.7.3。构建目标为 macOS 13+，CI 矩阵为 macOS 15 和 26。各轮覆盖与实际结果见 [验收证据索引](docs/project/acceptance.md)。
 
 ![真实原生窗口：仅临时测试项目和服务](docs/images/app-preview.png)
 
@@ -60,7 +60,7 @@ open "build/Codex Service Manager.app"
 
 当前可用路径是新建聊天验证真实采集，或通过下方配套入口获得完整控制；不要为了登记而重复启动已经运行的业务服务。管理器没有对启用前对象做后台补录，原生发现页也不是自动登记。检查实际 PID/出生身份、端口或 Docker 状态；聊天声称启动完成不能代替现场运行状态。详细步骤见 [排障说明](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
 
-普通启动的可靠停止、常见命令/显式配置重启已交付。“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、任意复杂包装自动拆分；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](specs/001-service-manager/tasks.md)。
+普通启动的可靠停止、常见命令/显式配置重启已交付。“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、任意复杂包装自动拆分；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](docs/project/tasks.md)。
 
 ## 接入项目（完整控制）
 
@@ -164,7 +164,7 @@ open "build/Codex Service Manager.app"
 
 实际退出 Codex 后，本机服务、单容器、两个 Compose 成员共四项按策略停止；保留例外和另一项目继续同次运行，观察器独立存活。用户确认关闭窗口不误停、系统菜单栏详情入口可用。菜单栏快捷控制未逐项重复人工点击，明确保留该验证边界。
 
-测试资源已清理，原有容器状态保持不变。结果见 [验收报告](docs/results/VALIDATION.md)、[机器可读脱敏摘要](docs/results/validation-summary.json)及 [A-01 至 A-16 索引](specs/001-service-manager/acceptance.md)。这些是本机验收记录，不是 GitHub CI 或全平台通过声明。新增自动观察另有 8 组进程、6 项容器断言、一个新桌面聊天与实际原生窗口证据，见 [独立报告](docs/results/GLOBAL_CAPTURE.md)；旧聊天和后台兜底仍未完成。
+测试资源已清理，原有容器状态保持不变。结果见 [验收报告](docs/results/VALIDATION.md)、[机器可读脱敏摘要](docs/results/validation-summary.json)及 [A-01 至 A-16 索引](docs/project/acceptance.md)。这些是本机验收记录，不是 GitHub CI 或全平台通过声明。新增自动观察另有 8 组进程、6 项容器断言、一个新桌面聊天与实际原生窗口证据，见 [独立报告](docs/results/GLOBAL_CAPTURE.md)；旧聊天和后台兜底仍未完成。
 
 ## 复验
 
@@ -180,7 +180,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
 
 真实项目测试需要 Node（Vite 要求 `^20.19.0 || >=22.12.0`）、npm、Java 17+、Maven 3.6.3+；工具从 PATH 查找，也可配置 CSM_NPM/CSM_MAVEN。运行 `/usr/bin/python3 scripts/prepare_fixtures.py` 安装锁定的 npm/Maven 夹具依赖，再运行 `tests/verify_projects.py`，默认使用独立测试状态。详细安装、Docker 和 CI 步骤见 [复现与 CI](docs/TESTING.md)。
 
-[GitHub CI](https://github.com/Chillax73/codex-service-manager/actions/workflows/ci.yml) 检查 macOS 构建、Python 回归与发布隐私；[Docker 集成](https://github.com/Chillax73/codex-service-manager/actions/workflows/docker.yml) 独立手动执行。CI 不包含实际窗口、系统菜单栏或真实 Codex 退出，仍需按 [验收索引](specs/001-service-manager/acceptance.md) 人工复验。原始证据仅保存在本机 `docs/evidence/`。
+[GitHub CI](https://github.com/Chillax73/codex-service-manager/actions/workflows/ci.yml) 检查 macOS 构建、Python 回归与发布隐私；[Docker 集成](https://github.com/Chillax73/codex-service-manager/actions/workflows/docker.yml) 独立手动执行。CI 不包含实际窗口、系统菜单栏或真实 Codex 退出，仍需按 [验收索引](docs/project/acceptance.md) 人工复验。原始证据仅保存在本机 `docs/evidence/`。
 
 ## 使用与维护
 
@@ -209,6 +209,6 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
 ## 项目文档
 
 - [开发文档入口与 self 流程](CONTRIBUTING.md#开发文档)
-- [产品需求](docs/PROJECT_REQUIREMENTS.md)、[主规格与分项规格](specs/001-service-manager/spec.md)、[设计](specs/001-service-manager/design.md)
-- [实施计划](specs/001-service-manager/plan.md)、[任务清单](specs/001-service-manager/tasks.md)、[验收证据索引](specs/001-service-manager/acceptance.md)
+- [产品需求](docs/PROJECT_REQUIREMENTS.md)、[主规格与分项规格](docs/project/spec.md)、[设计](docs/project/design.md)
+- [实施计划](docs/project/plan.md)、[任务清单](docs/project/tasks.md)、[验收证据索引](docs/project/acceptance.md)
 - [早期实施报告](docs/IMPLEMENTATION_REPORT.md)、[第一轮原型记录](validation/ROUND1_REPORT.md)

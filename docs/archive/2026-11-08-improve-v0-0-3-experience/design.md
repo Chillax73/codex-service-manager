@@ -10,7 +10,7 @@
 - `capture.py:collect_once` 会重写自动观察进程的 `name`；`engine.py:record_spec` 也会覆盖重复登记名称，不能直接把用户名称与来源名称共用。
 - `engine.py:operate`、`adoption.py:configure`、健康检查及停止逻辑目前共享 `services.spec`。运行中直接覆盖它会影响停止范围或当前健康地址。
 - 项目删除已经有实时状态阻塞、事务回收及日志保留规则；服务删除应复用其原则，同时遵守用户明确选择：不写忽略标记，允许再次采集。
-- 当前没有 OpenSpec 主规格；`specs/001-service-manager/` 和现有测试仍提供稳定身份、先停后启、数据保留及项目隔离基线。
+- 当前没有 OpenSpec 主规格；当时的工程基线（现见 [项目规格](../../project/spec.md)）和现有测试仍提供稳定身份、先停后启、数据保留及项目隔离基线。
 
 ## Goals / Non-Goals
 

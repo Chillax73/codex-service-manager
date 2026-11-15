@@ -31,7 +31,7 @@
 
 ### Modified Capabilities
 
-无。当前 `openspec/specs/` 没有主规格，以上为首次引入的 OpenSpec 能力。已有 `specs/001-service-manager/` 仍是需遵守的工程基线，本次不将其复制成另一套完整规格。
+无。当前 `openspec/specs/` 没有主规格，以上为首次引入的 OpenSpec 能力。当时的工程基线仍适用，现见 [项目规格](../../project/spec.md)，本次不将其复制成另一套完整规格。
 
 ## Impact
 
