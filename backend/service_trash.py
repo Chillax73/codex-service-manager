@@ -88,6 +88,7 @@ def restore(trash_id):
             if archive.get('purging'):
                 raise RuntimeError('回收记录已开始清理，不能恢复')
             item = archive['service']
+            item['config_revision'] = item.get('config_revision', 0) + 1
             if not db.execute('SELECT id FROM projects WHERE id=?', [item['project_id']]).fetchone():
                 raise RuntimeError('原项目不存在，恢复原项目后再试')
             if db.execute('SELECT id FROM services WHERE id=?', [item['id']]).fetchone():
