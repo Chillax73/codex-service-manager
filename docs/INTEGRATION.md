@@ -1,20 +1,24 @@
 # Codex 桌面接入
 
-开发分支提供用户级自动观察和项目配套完整控制两种接入。
+可安装用户级自动观察，也可通过项目配套入口登记服务并获得完整控制。
 
 ## 任意本机聊天自动观察
 
 `--instructions` 会同时给全局 AGENTS.md 添加带标记的正常采集说明，保留原指令并首次备份；用于让其他聊天在申请权限时说明采集写入的范围。它明确禁止绕过审批，不授予额外业务权限。移除时同样带上 `--instructions`，只移除本工具段落。
 
-在本克隆中执行 `/usr/bin/python3 scripts/install_global_capture.py --instructions`，它合并写入 `~/.codex/hooks.json` 的两个本工具 handler，首次修改已有文件时备份，保留其他 hooks。通过 Codex CLI `/hooks` 逐个审核 User config 来源的 `PreToolUse`、`PostToolUse`，命令为本克隆的 `backend/capture.py hook`；不使用绕过信任选项。安装后开始新聊天，既有聊天未重新加载时不会使用新增配置。
+在本克隆中执行 `/usr/bin/python3 scripts/install_global_capture.py --instructions`，它合并写入 `~/.codex/hooks.json` 的两个本工具 handler，首次修改已有文件时备份，保留其他 hooks。通过 Codex CLI `/hooks` 逐个审核 User config 来源的 `PreToolUse`、`PostToolUse`，命令为本克隆的 `backend/capture.py hook`。命令包含克隆的绝对路径，移动克隆或修改定义后需更新安装并重新审核。安装后开始新聊天加载配置。
 
-`/usr/bin/python3 scripts/check_capture_hooks.py /项目目录` 启动独立短时 app-server，只读检查 user/trusted/enabled，不请求模型。它不连接桌面共享运行时、不重载旧聊天；配置可用不代表实际回调已经执行。再在新聊天正常启动服务，检查原生窗口的“自动观察”标识。查看“管理设置 → 服务自动采集”的心跳与错误，可用“启动或恢复自动采集”恢复组件。
+在新聊天正常启动服务，检查原生窗口的“自动观察”标识。配置、心跳、旧聊天漏记及恢复方式见 [自动观察排障](OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
 
 采集器经 scripts/csm 登记为内部任务，独立于窗口运行。TCP 监听进程分别显示，无端口叶子任务持续约 30 秒后显示。shell 启动前后的检查点通过本机临时 FIFO 唤醒采集器并核对身份，末尾检查点保留原命令退出码。常见 `nohup … &` 返回前先记录其子进程。采集记录只保存白名单元数据和经验证的结构化启动信息。观察对象按能力开放控制，原观察运行排除在自动结束策略之外。
 
 直接 `docker run -d` 返回容器 ID、直接 Compose 启动配置与实际标签匹配时自动登记。复杂 shell 包装、脚本内部 Docker 操作、在采样前已脱离全部已知父进程的启动方式可能漏记；远端和未触发 hooks 的工具路径不覆盖。启用前的已有服务不被事后认领。本机进程日志和退出码未采集，观察到退出的时间可能晚于实际退出。详细验证见 [自动观察报告](results/GLOBAL_CAPTURE.md)。
 
-旧聊天加载缺口已复现：新开窗口继续安装前的聊天，没有产生采集事件；当前没有已验收的正常热加载步骤。临时使用新聊天，或使用下方配套入口。不要重复启动已运行对象；没有可信身份/归属时保留在发现页。后台自动发现补录仍待实施。
+### 命令兼容范围
+
+Bash/zsh 回归比较了原命令和带检查点命令的 stdout、stderr 与退出码，覆盖多行命令、heredoc、管道与 pipefail、set -e、EXIT/TERM trap、显式 exit/exec 和超时终止。显式 exit/exec、errexit 和信号可能跳过末尾检查点。依赖 shell 初始状态、DEBUG trap、xtrace 或其他 Hook 改写顺序的命令需要单独实测。采集标记用于避免重复插入，原工具输入的其他字段保留。复验见 [采集回归](TESTING.md#用户级自动观察开发分支)。
+
+申请启动服务所需权限时，说明 shell 检查点及必要的本机元数据写入，保留正常审核流程和现有授权范围。项目级禁用与全局移除分别见 [采集开关](OPERATIONS.md#项目采集开关与历史保留) 和 [卸载说明](OPERATIONS.md#卸载与数据清理)。
 
 ## 普通启动后接管（开发分支）
 
@@ -30,10 +34,6 @@
 
 重启先核对并停止旧树、确认端口释放，再使用管理器监督器创建新运行，沿用 service ID。停止失败不能继续重启。原运行仍排除在项目结束策略之外；经管理器再次启动后升级为已管理。日志从新运行开始采集。多服务脚本不会被猜测成单项重启配置，需拆分；特殊 daemon、自我重启/共享启动器不能保证通用自动接管。详见 [验收报告](results/ORDINARY_ADOPTION.md)。
 
-本工具 handler 的命令包含克隆绝对路径，移动/删除克隆或更改定义后需更新安装并重新正常审核。启用后 shell 命令附加 arm 检查点，本机服务启动审批应说明必要元数据写入；全局指令说明不等于授予业务操作权限。
-
-移除：先在 `/hooks` 禁用本工具的两个 User config handler，再执行 `/usr/bin/python3 scripts/install_global_capture.py --remove --instructions` 并确认加载过旧配置的聊天不再执行本工具回调。当前没有经过验收的旧聊天热加载入口；只改磁盘配置不能证明旧运行时已更新。需要停止采集组件时执行 `scripts/csm stop csm-auto-collector`。移除不会停止业务服务或删历史，也不移除项目完整控制约定。
-
 ## 项目配套完整控制
 
 配套启动入口不依赖工具 hooks。项目只需接入一次，之后 Codex 按项目指令登记正常服务启动，无需用户逐次填写配置。
@@ -42,7 +42,7 @@
 /usr/bin/python3 /绝对路径/codex-service-manager/scripts/integrate.py /项目目录
 ```
 
-安装器保留原 AGENTS.md，加入带标记的段落，首次修改前备份；`--remove` 移除自己的段落。Codex 新会话加载项目指令后生效。本项目已接入。
+安装器保留目标目录原有的 `AGENTS.md`，加入带标记的段落，首次修改前备份。`--remove` 移除安装器添加的段落。每个克隆或 worktree 按自己的接入状态操作，Codex 新会话加载目标目录的项目指令后生效。本仓库的开发约定见 [贡献指南](../CONTRIBUTING.md#开发文档)。
 
 示例：
 
@@ -62,6 +62,6 @@
 
 参考官方文档：[项目指令](https://learn.chatgpt.com/docs/agents-md)、[Skills](https://learn.chatgpt.com/docs/build-skills)。这里采用项目指令接入，尚未发布 Marketplace 插件。
 
-## 可选 Hooks 实验
+## 早期 Hooks 实验
 
-配套完整控制依赖上述 AGENTS.md 和 scripts/csm；用户级自动观察使用 backend/capture.py。validation/ 早期 hooks 只记录事件，不登记或启停服务。安装、审核、复验与移除见 [Hooks 使用指南](HOOKS.md)，不应把 SessionEnd 直接映射为应用退出。
+早期项目级 hooks 用于记录事件并核对 CLI 与桌面实际触发范围。复现步骤和 SessionEnd 边界见 [Hooks 事件实验](../validation/HOOKS.md)。

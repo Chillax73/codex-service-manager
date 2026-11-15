@@ -4,7 +4,7 @@
 
 当前源码版本为 **1.0.0**，应用构建号为 **3**。该版本增加项目扫描管理、排序与置顶、服务配置与删除、五项状态筛选和空闲资源优化。各版本变更见 [更新记录](CHANGELOG.md)。
 
-既有 A-01 至 A-16 本机验收包含真实 Codex 退出检测，实测环境为 Apple Silicon / macOS 15.7.3。构建目标为 macOS 13+，CI 矩阵为 macOS 15 和 26。各轮覆盖与实际结果见 [验收证据索引](specs/001-service-manager/acceptance.md)。
+既有 A-01 至 A-16 本机验收包含真实 Codex 退出检测，实测环境为 Apple Silicon / macOS 15.7.3。构建目标为 macOS 13+，CI 矩阵为 macOS 15 和 26。各轮覆盖与实际结果见 [验收证据索引](docs/project/acceptance.md)。
 
 ![真实原生窗口：仅临时测试项目和服务](docs/images/app-preview.png)
 
@@ -22,7 +22,7 @@
 - 项目结束：每个项目独立选择手动结束、退出 Codex、两者或持续运行；服务可设置保留例外。
 - 原生界面：主窗口、系统菜单栏、详情、日志、历史、配置、发现与观察器恢复。
 
-## 审查修复（未发布）
+## 审查修复（2026-10-27）
 
 核心采集回归加入 macOS CI；新增 shell 边界测试、按项目关闭后续采集、脱敏故障状态。存储/历史清理与 Swift 模型/状态/基础设施拆分，日志清理校验归属并保留最近运行。另提供快照性能基线、发布清单和版本一致性检查。范围与本机验证见 [修复验收](docs/results/REVIEW_HARDENING.md)；这不代表旧聊天热加载、无 hook 自动归属或公证分发已完成。
 
@@ -56,23 +56,19 @@ open "build/Codex Service Manager.app"
 
 ### 另一个窗口启动后没有出现
 
-先区分“新窗口”与“新聊天”：安装前已打开的旧聊天可能没有加载新增 hooks。配置检查脚本启动的是独立短时 app-server，`trusted/enabled` 与采集器心跳正常都不能证明旧聊天实际触发了回调。
-
-当前可用路径是新建聊天验证真实采集，或通过下方配套入口获得完整控制；不要为了登记而重复启动已经运行的业务服务。管理器没有对启用前对象做后台补录，原生发现页也不是自动登记。检查实际 PID/出生身份、端口或 Docker 状态；聊天声称启动完成不能代替现场运行状态。详细步骤见 [排障说明](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录)。
-
-普通启动的可靠停止、常见命令/显式配置重启已交付。“任意聊天”目标仍有三项待办：旧聊天正常配置加载、后台发现兜底、任意复杂包装自动拆分；见 [需求基线](docs/PROJECT_REQUIREMENTS.md) 和 [任务清单](specs/001-service-manager/tasks.md)。
+先确认新窗口是否在继续旧聊天，以及服务是否仍在运行。按 [自动观察排障](docs/OPERATIONS.md#另一个聊天或窗口启动服务却没有记录) 检查配置、心跳和实际事件。旧聊天配置加载、后台发现兜底和复杂包装自动拆分见 [任务清单](docs/project/tasks.md)。
 
 ## 接入项目（完整控制）
 
 在当前克隆的根目录初始化本机项目指令：
 
 ```sh
-# 已有 AGENTS.md 时保留原文件。
+# 在本仓库首次采用开发指令模板时执行。保留已有 AGENTS.md。
 [ -f AGENTS.md ] || cp AGENTS.example.md AGENTS.md
 /usr/bin/python3 scripts/integrate.py "$PWD"
 ```
 
-接入其他项目，把最后一个参数改为该项目目录。在 Codex 中重新打开目标项目并开始新会话，确保加载更新的 AGENTS.md；然后让 Codex“按照本项目 AGENTS.md 启动前端/后端服务并登记到服务管理器”。安装器保留原指令、保存首次备份，并写入当前克隆路径的配套入口；生成的本机指令不提交 Git。
+接入其他项目时，运行第二条命令并将最后一个参数替换为目标项目目录。在 Codex 中重新打开目标项目并开始新会话，确保加载更新的 AGENTS.md；然后让 Codex“按照本项目 AGENTS.md 启动前端/后端服务并登记到服务管理器”。安装器保留原指令、保存首次备份，并写入当前克隆路径的配套入口。生成的本机指令仅留本机。
 
 ```sh
 # 以下命令在目标项目目录执行；把入口路径替换为当前克隆的路径。
@@ -121,29 +117,7 @@ open "build/Codex Service Manager.app"
 | 0.2.0 用户级 `backend/capture.py` hooks | 记录启动身份，独立采集服务；已完成一个新桌面聊天的真实工具回调和原生窗口验证。 |
 | `validation/` 中的 Codex hooks | 可选的早期实验，仅记录生命周期/工具事件元数据，未接入正式服务自动登记或启停。 |
 
-完整控制按上面的“接入项目”使用；无需逐项目配置的自动观察使用新的用户级采集 hooks，适用当前已验证路径。下面的 `validation/` hooks 仍只是早期事件实验，不是新的采集组件。`SessionEnd` 也可能由归档、删除会话或闲置触发，不能作为应用退出的唯一判断。[OpenAI Hooks 官方说明](https://learn.chatgpt.com/docs/hooks#sessionend)
-
-如需复验 hooks，在本仓库克隆根目录进行：
-
-1. 阅读 `validation/install_hooks.py` 和 `validation/hook_recorder.py`，然后生成本机配置：
-
-   ```sh
-   /usr/bin/python3 validation/install_hooks.py
-   ```
-
-   生成 `.codex/hooks.json` 和 `validation/hooks.json`，配置五个事件：`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop`、`SessionEnd`。已有不同配置时安装器拒绝覆盖，请先处理冲突或使用独立克隆目录试验。
-
-2. 从此目录启动 `codex` CLI，按正常流程信任项目；在 CLI 内输入 `/hooks`，阅读并信任这些 hooks。安装脚本不授予信任；修改定义后需要重新审核。[官方审核说明](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)
-
-3. 可在另一个终端、同一仓库根目录探测配置：
-
-   ```sh
-   /usr/bin/python3 validation/verify_hooks.py --project-only
-   ```
-
-   它检查配置与信任元数据，不会调用模型，也不证明桌面工具事件已经触发。请核对 `/hooks` 中的本项目配置与启用状态，再让 Codex 执行指南中的无害标记命令，查看本机 `validation/.state/hook-events.jsonl` 的实际事件。
-
-事件文件包含项目路径和会话标识；仅留本机，勿提交 Git 或作为原始附件上传。关闭实验时先在 `/hooks` 禁用本工具条目，再仅移除本工具配置，保留其他 hooks。完整事件复验、路径/版本排障与移除步骤见 [Hooks 使用指南](docs/HOOKS.md)；[原型验证记录](validation/ROUND1_REPORT.md) 与正式产品验收分别保存。
+正式配置见 [Codex 桌面接入](docs/INTEGRATION.md)。早期项目级 hooks 的安装、审核、事件检查和移除见 [Hooks 事件实验](validation/HOOKS.md)，实测范围见 [原型验证记录](validation/ROUND1_REPORT.md)。
 
 ## 结束策略与边界
 
@@ -164,7 +138,7 @@ open "build/Codex Service Manager.app"
 
 实际退出 Codex 后，本机服务、单容器、两个 Compose 成员共四项按策略停止；保留例外和另一项目继续同次运行，观察器独立存活。用户确认关闭窗口不误停、系统菜单栏详情入口可用。菜单栏快捷控制未逐项重复人工点击，明确保留该验证边界。
 
-测试资源已清理，原有容器状态保持不变。结果见 [验收报告](docs/results/VALIDATION.md)、[机器可读脱敏摘要](docs/results/validation-summary.json)及 [A-01 至 A-16 索引](specs/001-service-manager/acceptance.md)。这些是本机验收记录，不是 GitHub CI 或全平台通过声明。新增自动观察另有 8 组进程、6 项容器断言、一个新桌面聊天与实际原生窗口证据，见 [独立报告](docs/results/GLOBAL_CAPTURE.md)；旧聊天和后台兜底仍未完成。
+测试资源已清理，原有容器状态保持不变。结果见 [验收报告](docs/results/VALIDATION.md)、[机器可读脱敏摘要](docs/results/validation-summary.json)及 [A-01 至 A-16 索引](docs/project/acceptance.md)。这些是本机验收记录，不是 GitHub CI 或全平台通过声明。新增自动观察另有 8 组进程、6 项容器断言、一个新桌面聊天与实际原生窗口证据，见 [独立报告](docs/results/GLOBAL_CAPTURE.md)；旧聊天和后台兜底仍未完成。
 
 ## 复验
 
@@ -180,7 +154,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
 
 真实项目测试需要 Node（Vite 要求 `^20.19.0 || >=22.12.0`）、npm、Java 17+、Maven 3.6.3+；工具从 PATH 查找，也可配置 CSM_NPM/CSM_MAVEN。运行 `/usr/bin/python3 scripts/prepare_fixtures.py` 安装锁定的 npm/Maven 夹具依赖，再运行 `tests/verify_projects.py`，默认使用独立测试状态。详细安装、Docker 和 CI 步骤见 [复现与 CI](docs/TESTING.md)。
 
-[GitHub CI](https://github.com/Chillax73/codex-service-manager/actions/workflows/ci.yml) 检查 macOS 构建、Python 回归与发布隐私；[Docker 集成](https://github.com/Chillax73/codex-service-manager/actions/workflows/docker.yml) 独立手动执行。CI 不包含实际窗口、系统菜单栏或真实 Codex 退出，仍需按 [验收索引](specs/001-service-manager/acceptance.md) 人工复验。原始证据仅保存在本机 `docs/evidence/`。
+[GitHub CI](https://github.com/Chillax73/codex-service-manager/actions/workflows/ci.yml) 检查 macOS 构建、Python 回归与发布隐私；[Docker 集成](https://github.com/Chillax73/codex-service-manager/actions/workflows/docker.yml) 独立手动执行。CI 不包含实际窗口、系统菜单栏或真实 Codex 退出，仍需按 [验收索引](docs/project/acceptance.md) 人工复验。原始证据仅保存在本机 `docs/evidence/`。
 
 ## 使用与维护
 
@@ -208,8 +182,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/test_capture.py --suite core
 
 ## 项目文档
 
-- [需求文档](docs/PROJECT_REQUIREMENTS.md)
-- [Coding spec](specs/001-service-manager/spec.md)、[实现设计](specs/001-service-manager/plan.md)、[数据模型](specs/001-service-manager/data-model.md)
-- [实施任务](specs/001-service-manager/tasks.md)、[实施报告](docs/IMPLEMENTATION_REPORT.md)、[自动观察验收与限制](docs/results/GLOBAL_CAPTURE.md)
-- [状态颜色、筛选与项目汇总验收](docs/results/STATUS_DISPLAY.md)
-- [第一轮原型记录](validation/ROUND1_REPORT.md)（独立于产品验收）
+- [开发文档入口与 self 流程](CONTRIBUTING.md#开发文档)
+- [产品需求](docs/PROJECT_REQUIREMENTS.md)、[主规格与分项规格](docs/project/spec.md)、[设计](docs/project/design.md)
+- [实施计划](docs/project/plan.md)、[任务清单](docs/project/tasks.md)、[验收证据索引](docs/project/acceptance.md)
+- [早期实施报告](docs/results/IMPLEMENTATION_REPORT.md)、[第一轮原型记录](validation/ROUND1_REPORT.md)

@@ -1,6 +1,6 @@
 # 2026-10-27 审查问题修复验收
 
-核对基线：用户提供的 main/8688f83 静态审查清单。本轮交付分支为 `f_wqx_review-hardening`，按用户授权提交并推送源码与文档；不修改已安装用户级 hooks、信任配置或业务服务，不包含合并、版本标签或 Release 发布。需求、设计与任务见 [实施计划](../features/review-hardening/PLAN.md)。
+核对基线：用户提供的 main/8688f83 静态审查清单。本轮交付分支为 `f_wqx_review-hardening`，按用户授权提交并推送源码与文档；不修改已安装用户级 hooks、信任配置或业务服务，不包含合并、版本标签或 Release 发布。需求、设计与任务见 [实施计划](../archive/2026-10-27-review-hardening/PLAN.md)。
 
 ## 逐项结论
 

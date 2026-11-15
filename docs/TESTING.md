@@ -108,7 +108,7 @@ Docker/Compose 可用，测试以唯一标签隔离对象并核对原有容器�
 
 `.github/workflows/ci.yml` 在 main 推送、PR 或手动触发时运行 macOS 构建、签名、隐私扫描和版本检查，并执行本文的基础回归及项目栏、扫描策略和服务配置测试。核心采集使用 `--suite core`（20 项）。独立 Linux job 检查锁定 npm 夹具依赖的高危公告。仅推送开发分支不会触发此工作流。`.github/workflows/docker.yml` 在独立 Linux runner 上手动验证 Docker/Compose、容器失败场景和容器项目的改名、删除及恢复。应用构建目标为 macOS。工作流只读访问仓库，原始证据留在运行环境。
 
-真实主窗口、菜单栏与实际 Codex 退出继续使用 [验收索引](../specs/001-service-manager/acceptance.md) 在解锁桌面操作；引擎中的合成策略测试只能验证规则，不是实际退出证据。
+真实主窗口、菜单栏与实际 Codex 退出继续使用 [验收索引](project/acceptance.md) 在解锁桌面操作；引擎中的合成策略测试只能验证规则，不是实际退出证据。
 
 服务生命周期变更的 [验收记录](results/SERVICE_LIFECYCLE.md) 包含同库 Docker 采集、故障注入、服务回收及原生窗口检查。运行 `./scripts/build.sh` 后，可用 `PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/verify_lifecycle_native.py` 复验一次性 macOS 应用的窗口关闭、退出策略、心跳和结果持久化。
 
