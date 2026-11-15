@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shlex
 import re
+import selectors
 import signal
 import socket
 import sqlite3
@@ -229,11 +230,13 @@ def command(argv, env=None, cwd=None, timeout=30, merge_stderr=False):
     return p.stdout.strip()
 
 
-def docker(*args, env=None, cwd=None, timeout=30, merge_stderr=False):
+def docker_executable():
     executable = '/usr/local/bin/docker'
-    if not Path(executable).exists():
-        executable = 'docker'
-    return command([executable, *args], env=env, cwd=cwd, timeout=timeout, merge_stderr=merge_stderr)
+    return executable if Path(executable).exists() else 'docker'
+
+
+def docker(*args, env=None, cwd=None, timeout=30, merge_stderr=False):
+    return command([docker_executable(), *args], env=env, cwd=cwd, timeout=timeout, merge_stderr=merge_stderr)
 
 
 def project(cwd, name=None):
@@ -545,6 +548,158 @@ def containers_for(item, *, budget=None):
     return result
 
 
+DOCKER_PROBE_MAX_IDS = 256
+DOCKER_PROBE_MAX_BYTES = 1024 * 1024
+DOCKER_PROBE_FAILURE = '无法确认容器状态；保留既有运行'
+DOCKER_PROBE_MISSING = '容器已不存在；保留既有运行'
+DOCKER_PROBE_TIMEOUT = '后台容器检查超时'
+_DOCKER_ID = re.compile(r'[a-f0-9]{64}')
+_COMPOSE_LABELS = ('project', 'service', 'project.working_dir', 'project.config_files')
+_DOCKER_BATCH_FORMAT = (
+    '{"Id":{{json .Id}},"State":{"Running":{{json .State.Running}},'
+    '"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},'
+    '"ExitCode":{{json .State.ExitCode}},"Error":{{json .State.Error}},'
+    '"Health":{"Status":{{with (index .State "Health")}}{{json .Status}}{{else}}null{{end}}}},'
+    '"NetworkSettings":{"Ports":{{json .NetworkSettings.Ports}}},"Config":{"Labels":{'
+    + ','.join(f'"{key}":{{{{json (index .Config.Labels "{key}")}}}}'
+               for key in ('com.docker.compose.' + label for label in _COMPOSE_LABELS)) + '}}}'
+)
+
+
+def docker_probe_remaining(deadline):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError(DOCKER_PROBE_TIMEOUT)
+    return left
+
+
+def docker_probe_output(args, deadline, *, cwd=None, env=None):
+    """Read bounded stdout and do not expose stderr from an external probe."""
+    docker_probe_remaining(deadline)
+    with subprocess.Popen([docker_executable(), *args], stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=cwd, env=env) as child:
+        data = bytearray()
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(child.stdout, selectors.EVENT_READ)
+                while True:
+                    if not selector.select(docker_probe_remaining(deadline)):
+                        raise TimeoutError(DOCKER_PROBE_TIMEOUT)
+                    block = os.read(child.stdout.fileno(), min(65536, DOCKER_PROBE_MAX_BYTES + 1 - len(data)))
+                    if not block:
+                        break
+                    data.extend(block)
+                    if len(data) > DOCKER_PROBE_MAX_BYTES:
+                        raise ValueError('后台容器输出超限')
+            code = child.wait(timeout=docker_probe_remaining(deadline))
+        except BaseException:
+            child.kill()
+            raise
+    return code, data.decode('utf-8', errors='replace').splitlines()
+
+
+def docker_full_id(value):
+    return isinstance(value, str) and _DOCKER_ID.fullmatch(value) is not None
+
+
+def compose_probe_members(spec, members, deadline):
+    """Read the full ID-to-member mapping for one equivalent Compose invocation."""
+    code, lines = docker_probe_output(
+        ('compose', '-p', spec['compose_project'], '-f', spec['file'], 'ps', '-a',
+         '--no-trunc', '--format', '{{.ID}} {{.Service}}', '--', *sorted(members)),
+        deadline, cwd=spec['cwd'], env=runtime_env(spec))
+    if code != 0:
+        raise ValueError('无法检查 Compose 成员')
+    found = {member: [] for member in members}
+    seen = set()
+    for line in lines:
+        if not line.strip():
+            continue  # Some CLI versions emit one newline for an empty result.
+        cid, member = line.split()
+        if not docker_full_id(cid) or member not in found or cid in seen:
+            raise ValueError('Compose 成员映射不完整')
+        if len(seen) >= DOCKER_PROBE_MAX_IDS:
+            raise ValueError('Compose 成员映射超限')
+        seen.add(cid)
+        found[member].append(cid)
+    return found
+
+
+def valid_docker_probe_object(obj):
+    try:
+        state = obj['State']
+        ports = obj['NetworkSettings']['Ports']
+        labels = obj['Config']['Labels']
+        return (type(state['Running']) is bool and type(state['ExitCode']) is int
+                and all(isinstance(state[k], str) for k in ('Status', 'StartedAt', 'FinishedAt', 'Error'))
+                and state['Status'] in ('created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead')
+                and all(v.startswith('0001-') or docker_time(v) is not None
+                        for v in (state['StartedAt'], state['FinishedAt']))
+                and (state['Health']['Status'] is None or isinstance(state['Health']['Status'], str))
+                and all(labels['com.docker.compose.' + k] is None
+                        or isinstance(labels['com.docker.compose.' + k], str) for k in _COMPOSE_LABELS)
+                and (ports is None or (isinstance(ports, dict) and all(
+                    bindings is None or (isinstance(bindings, list) and all(
+                        isinstance(entry['HostIp'], str) and isinstance(entry['HostPort'], str)
+                        for entry in bindings)) for bindings in ports.values()))))
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
+def docker_probe_objects(ids, deadline):
+    """Inspect only exact IDs in the original default Docker context."""
+    if not ids:
+        return {}, {}
+    if len(ids) > DOCKER_PROBE_MAX_IDS or not all(docker_full_id(cid) for cid in ids):
+        raise ValueError('后台容器标识超限或无效')
+    objects, bad = {}, set()
+    try:
+        _, lines = docker_probe_output(('inspect', '--type=container', '--format', _DOCKER_BATCH_FORMAT,
+                                        *sorted(ids)), deadline)
+    except (TimeoutError, subprocess.TimeoutExpired):
+        return {}, dict.fromkeys(ids, DOCKER_PROBE_TIMEOUT)
+    except (OSError, ValueError):
+        return {}, dict.fromkeys(ids, DOCKER_PROBE_FAILURE)
+    for line in lines:
+        try:
+            obj = json.loads(line)
+            cid = obj['Id']
+        except (TypeError, ValueError, KeyError, RecursionError):
+            continue
+        if not docker_full_id(cid) or cid not in ids:
+            continue
+        if cid in objects or not valid_docker_probe_object(obj):
+            bad.add(cid)
+        else:
+            objects[cid] = obj
+    for cid in bad:
+        objects.pop(cid, None)
+    unanswered = ids - objects.keys()
+    errors = dict.fromkeys(unanswered, DOCKER_PROBE_FAILURE)
+    absent_candidates = unanswered - bad
+    if absent_candidates:
+        try:
+            code, lines = docker_probe_output(('ps', '-aq', '--no-trunc'), deadline)
+            inventory = {line for line in lines if line.strip()}
+            if code == 0 and all(docker_full_id(cid) for cid in inventory):
+                for cid in absent_candidates - inventory:
+                    errors[cid] = DOCKER_PROBE_MISSING
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return objects, errors
+
+
+def matches_compose_probe(obj, spec):
+    labels = obj['Config']['Labels']
+    project, member, working, files = (labels['com.docker.compose.' + key] for key in _COMPOSE_LABELS)
+    try:
+        return (project == spec['compose_project'] and member == spec['member'] and bool(working)
+                and Path(working).resolve() == Path(spec['file']).parent
+                and bool(files) and compose_config_paths(files) == {spec['file']})
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def docker_runtime(objects):
     return {'container_ids': [o['Id'] for o in objects],
             'started_at': [o['State'].get('StartedAt') for o in objects],
@@ -812,7 +967,8 @@ def operate(service_id, action, trigger='user'):
         raise
 
 
-def probe_observation(item, run, *, background=False, managed_identities=None, process_context=None):
+def probe_observation(item, run, *, background=False, managed_identities=None, process_context=None,
+                      docker_result=None):
     if (not background or process_context is not None
             and process_context['versions'].get(item['id']) != (item, run)):
         process_context = None  # A replacement run must not use an older process table.
@@ -825,7 +981,12 @@ def probe_observation(item, run, *, background=False, managed_identities=None, p
     observed = item['spec'].get('management') == 'observed'
     if item['kind'] in ('container', 'compose'):
         try:
-            objects = containers_for(item, budget=4) if background else containers_for(item)
+            if background and docker_result is not None:
+                objects, error = docker_result
+                if objects is None:
+                    raise RuntimeError(error)
+            else:
+                objects = containers_for(item, budget=4) if background else containers_for(item)
             can_stop = any(o['State']['Running'] for o in objects)
             state = 'running' if can_stop else 'stopped'
             run = {**(run or {}), 'runtime': docker_runtime(objects)}
@@ -979,9 +1140,8 @@ def cached_service(item, paused, cached):
                                  'last_checked_at': cached['checked_at'] if cached else None, 'state_fresh': False})
 
 
-@read_context()
-def prepare_observation(service_id, automatic=False, expected=None, *, background=False,
-                        managed_identities=None, started=None, process_context=None):
+def observation_version(service_id, automatic=False, expected=None, *, started=None):
+    """Capture the registration, latest run and project generation before probing."""
     if started is None:
         started = timestamp()
     item = service(service_id)
@@ -989,11 +1149,30 @@ def prepare_observation(service_id, automatic=False, expected=None, *, backgroun
     token = observation_token(project)
     if automatic and (not project or not project['auto_scan'] or (expected is not None and expected != token)):
         return None
-    run = latest(service_id)
-    result = (probe_observation(item, run, background=True, managed_identities=managed_identities,
-                                process_context=process_context)
-              if background else probe_observation(item, run))
+    return item, latest(service_id), token, started
+
+
+def prepare_version(version, *, background=False, managed_identities=None,
+                    process_context=None, docker_result=None):
+    item, run, token, started = version
+    if docker_result is not None:
+        result = probe_observation(item, run, background=background, docker_result=docker_result)
+    elif background:
+        result = probe_observation(item, run, background=True, managed_identities=managed_identities,
+                                   process_context=process_context)
+    else:
+        result = probe_observation(item, run)
     return item, run, token, started, timestamp(), result
+
+
+@read_context()
+def prepare_observation(service_id, automatic=False, expected=None, *, background=False,
+                        managed_identities=None, started=None, process_context=None):
+    version = observation_version(service_id, automatic, expected, started=started)
+    if version is None:
+        return None
+    return prepare_version(version, background=background, managed_identities=managed_identities,
+                           process_context=process_context)
 
 
 def persist_observation(db, service_id, checked_at, projection):

@@ -1,12 +1,12 @@
 """Early exits and rejected starts must have durable, nonduplicated diagnostics."""
 import json
 from pathlib import Path
-import socket
+import subprocess
 import sys
 import time
 import uuid
 BASE=Path(__file__).resolve().parents[1]
-from support import prepare_workspace
+from support import prepare_workspace, stop_test_watcher
 prepare_workspace()
 sys.path.insert(0,str(BASE/'backend'))
 import engine
@@ -35,19 +35,29 @@ try:
     for _ in range(3):engine.observe(item['id'])
     check('重复快照不重复导入同次已退出运行',len(engine.dispatch({'action':'history','id':item['id']}))==1,{'id':item['id']})
     check('已退出容器 stderr 诊断可读取','early-failure' in engine.dispatch({'action':'logs','id':item['id']}),{'id':item['id']})
-    with socket.socket() as blocker:
-        blocker.bind(('127.0.0.1',0));blocker.listen(1);port=blocker.getsockname()[1]
-        cid=engine.docker('create','--name',TAG+'-collision','--label','csm.test='+TAG,'-p','127.0.0.1:'+str(port)+':8000',
-            'python:3.12-slim','python','-m','http.server','8000','--bind','0.0.0.0')
-        owned.append(cid)
-        item=engine.dispatch({'action':'register_container','container_id':cid,'cwd':str(BASE/'tests/fixtures')})
-        check('仅创建未运行的容器不伪造历史',not engine.dispatch({'action':'history','id':item['id']}),{'native_state':engine.container_inspect(cid)['State']['Status']})
-        failure=None
-        try:engine.dispatch({'action':'start','id':item['id']})
-        except RuntimeError as exc:failure=str(exc)
-        state=engine.observe(item['id']);history=engine.dispatch({'action':'history','id':item['id']})
-        check('Docker 端口启动失败保存运行与诊断',bool(failure) and state['state']=='failed' and len(history)==1 and bool(history[0]['error']),
-            {'error':failure,'state':state['state'],'history':history})
+    # Reserve a real publish from the same Docker daemon. A macOS Python
+    # socket may not share the daemon's forwarding namespace (e.g. OrbStack).
+    blocker=engine.docker('run','-d','--pull=never','--name',TAG+'-blocker','--label','csm.test='+TAG,
+        '-p','127.0.0.1::8000','python:3.12-slim','python','-c','import time;time.sleep(90)')
+    owned.append(blocker)
+    subprocess.run([str(BASE/'scripts/csm'),'--root',str(engine.ROOT),'container',blocker,'--cwd',str(BASE/'tests/fixtures')],
+                   check=True,capture_output=True,text=True,timeout=15)
+    port=engine.container_inspect(blocker)['NetworkSettings']['Ports']['8000/tcp'][0]['HostPort']
+    cid=engine.docker('create','--name',TAG+'-collision','--label','csm.test='+TAG,'-p','127.0.0.1:'+port+':8000',
+        'python:3.12-slim','python','-m','http.server','8000','--bind','0.0.0.0')
+    owned.append(cid)
+    item=engine.dispatch({'action':'register_container','container_id':cid,'cwd':str(BASE/'tests/fixtures')})
+    check('仅创建未运行的容器不伪造历史',not engine.dispatch({'action':'history','id':item['id']}),{'native_state':engine.container_inspect(cid)['State']['Status']})
+    failure=None
+    try:engine.dispatch({'action':'start','id':item['id']})
+    except RuntimeError as exc:failure=str(exc)
+    state=engine.observe(item['id']);history=engine.dispatch({'action':'history','id':item['id']})
+    check('Docker 端口启动失败保存运行与诊断',bool(failure) and state['state']=='failed' and len(history)==1 and bool(history[0]['error']),
+        {'error':failure,'state':state['state'],'history':history})
+    if (engine.container_inspect(blocker)['Config'].get('Labels') or {}).get('csm.test')!=TAG:
+        raise RuntimeError('端口夹具标签不匹配')
+    engine.docker('rm','-f',blocker)
+    owned.remove(blocker)
     result=engine.dispatch({'action':'start','id':item['id']})
     check('解除端口冲突后启动产生独立运行',result['state']=='running' and len(engine.dispatch({'action':'history','id':item['id']}))==2,
         {'state':result['state'],'run_id':result['run']['id']})
@@ -62,6 +72,7 @@ finally:
             if (obj['Config'].get('Labels') or {}).get('csm.test')!=TAG:raise RuntimeError('测试标签不匹配')
             engine.docker('rm','-f',cid)
         except Exception as exc:errors.append(str(exc))
+    stop_test_watcher(engine.ROOT)
     check('专属失败测试容器清理',not errors,{'errors':errors})
     (BASE/'docs/evidence/docker-failures.json').write_text(json.dumps({'generated_at':time.time(),'state_root':str(engine.ROOT),'checks':checks},ensure_ascii=False,indent=2)+'\n')
 sys.exit(0 if checks and all(c['passed'] for c in checks) else 1)
